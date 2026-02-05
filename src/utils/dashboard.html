@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GST Scanner - Monitoring Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            color: #667eea;
+            font-size: 28px;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-healthy { background: #4CAF50; }
+        .status-degraded { background: #FF9800; }
+        .status-error { background: #F44336; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Tabs */
+        .tabs {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+        
+        .tab-buttons {
+            display: flex;
+            background: #f5f5f5;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        
+        .tab-button {
+            flex: 1;
+            padding: 15px 20px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            color: #666;
+            transition: all 0.3s;
+        }
+        
+        .tab-button:hover {
+            background: #e8e8e8;
+        }
+        
+        .tab-button.active {
+            background: white;
+            color: #667eea;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            color: #667eea;
+            font-size: 18px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 10px;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #f5f5f5;
+        }
+        
+        .metric:last-child {
+            border-bottom: none;
+        }
+        
+        .metric-label {
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .metric-value {
+            color: #333;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        
+        .metric-value.success { color: #4CAF50; }
+        .metric-value.error { color: #F44336; }
+        .metric-value.warning { color: #FF9800; }
+        
+        .large-metric {
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .large-number {
+            font-size: 48px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .large-label {
+            color: #999;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        
+        .integration-status {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .integration-item {
+            flex: 1;
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 5px;
+            text-align: center;
+        }
+        
+        .integration-item.online {
+            background: #E8F5E9;
+            color: #2E7D32;
+        }
+        
+        .integration-item.offline {
+            background: #FFEBEE;
+            color: #C62828;
+        }
+        
+        /* Log Viewer */
+        .log-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .log-controls input,
+        .log-controls select,
+        .log-controls button {
+            padding: 10px 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        .log-controls input {
+            flex: 1;
+            min-width: 200px;
+        }
+        
+        .log-controls button {
+            background: #667eea;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .log-controls button:hover {
+            background: #5568d3;
+        }
+        
+        .log-viewer {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 600px;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+        
+        .log-line {
+            margin: 2px 0;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        
+        .log-line:hover {
+            background: #2d2d2d;
+        }
+        
+        .log-line.INFO { color: #4EC9B0; }
+        .log-line.WARNING { color: #CE9178; }
+        .log-line.ERROR { color: #F48771; }
+        .log-line.CRITICAL { color: #F44336; }
+        .log-line.DEBUG { color: #9CDCFE; }
+        
+        .log-stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .log-stats span {
+            background: #f5f5f5;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+        
+        .refresh-info {
+            text-align: center;
+            color: white;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 GST Scanner - Monitoring Dashboard</h1>
+            <div class="status-indicator">
+                <div class="status-dot status-healthy" id="statusDot"></div>
+                <span id="statusText">Initializing...</span>
+            </div>
+        </div>
+        
+        <div class="tabs">
+            <div class="tab-buttons">
+                <button class="tab-button active" onclick="switchTab('overview')">📊 Overview</button>
+                <button class="tab-button" onclick="switchTab('logs')">📝 Logs</button>
+                <button class="tab-button" onclick="switchTab('api')">🔌 API Details</button>
+            </div>
+            
+            <!-- Overview Tab -->
+            <div id="overview-tab" class="tab-content active">
+                <div class="grid">
+                    <!-- Invoices Card -->
+                    <div class="card">
+                        <h2>📊 Invoice Processing</h2>
+                        <div class="large-metric">
+                            <div class="large-number" id="totalInvoices">0</div>
+                            <div class="large-label">Total Processed</div>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Success</span>
+                            <span class="metric-value success" id="successCount">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Failed</span>
+                            <span class="metric-value error" id="failedCount">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Success Rate</span>
+                            <span class="metric-value" id="successRate">0%</span>
+                        </div>
+                    </div>
+                    
+                    <!-- API Usage Card -->
+                    <div class="card">
+                        <h2>🔌 API Usage & Costs</h2>
+                        <div class="metric">
+                            <span class="metric-label">OCR Calls</span>
+                            <span class="metric-value" id="ocrCalls">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Parsing Calls</span>
+                            <span class="metric-value" id="parseCalls">0</span>
+                        </div>
+                        <div class="metric" style="border-top: 2px solid #667eea; margin-top: 10px; padding-top: 15px;">
+                            <span class="metric-label">Total Cost</span>
+                            <span class="metric-value warning" id="totalCost">$0.00</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Performance Card -->
+                    <div class="card">
+                        <h2>⚡ Performance</h2>
+                        <div class="metric">
+                            <span class="metric-label">Uptime</span>
+                            <span class="metric-value" id="uptime">0h 0m</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Avg Processing Time</span>
+                            <span class="metric-value" id="avgTime">0.0s</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Active Sessions</span>
+                            <span class="metric-value warning" id="activeSessions">0</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Integrations Status -->
+                <div class="card">
+                    <h2>🔗 Integrations Status</h2>
+                    <div class="integration-status">
+                        <div class="integration-item" id="telegramStatus">
+                            <div>📱 Telegram</div>
+                            <div id="telegramText">Checking...</div>
+                        </div>
+                        <div class="integration-item" id="sheetsStatus">
+                            <div>📊 Google Sheets</div>
+                            <div id="sheetsText">Checking...</div>
+                        </div>
+                        <div class="integration-item" id="geminiStatus">
+                            <div>🤖 Gemini API</div>
+                            <div id="geminiText">Checking...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Logs Tab -->
+            <div id="logs-tab" class="tab-content">
+                <div class="log-controls">
+                    <input type="text" id="logSearch" placeholder="🔍 Search logs..." onkeyup="if(event.key==='Enter') loadLogs()">
+                    <select id="logLevel" onchange="loadLogs()">
+                        <option value="">All Levels</option>
+                        <option value="DEBUG">DEBUG</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                    </select>
+                    <select id="logLines" onchange="loadLogs()">
+                        <option value="50">Last 50</option>
+                        <option value="100" selected>Last 100</option>
+                        <option value="200">Last 200</option>
+                        <option value="500">Last 500</option>
+                    </select>
+                    <button onclick="loadLogs()">🔄 Refresh</button>
+                    <button onclick="clearLogFilters()">✖ Clear</button>
+                </div>
+                
+                <div class="log-stats" id="logStats">
+                    <span>Total: <strong id="totalLines">0</strong></span>
+                    <span>Filtered: <strong id="filteredLines">0</strong></span>
+                    <span>Showing: <strong id="returnedLines">0</strong></span>
+                </div>
+                
+                <div class="log-viewer" id="logViewer">
+                    <div style="text-align: center; color: #888;">Loading logs...</div>
+                </div>
+            </div>
+            
+            <!-- API Details Tab -->
+            <div id="api-tab" class="tab-content">
+                <div class="grid">
+                    <div class="card">
+                        <h2>👁️ OCR API (Gemini Vision)</h2>
+                        <div class="metric">
+                            <span class="metric-label">Total Calls</span>
+                            <span class="metric-value" id="apiOcrCalls">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Estimated Tokens</span>
+                            <span class="metric-value" id="apiOcrTokens">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Avg Tokens/Call</span>
+                            <span class="metric-value" id="apiOcrAvg">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Estimated Cost</span>
+                            <span class="metric-value warning" id="apiOcrCost">$0.00</span>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <h2>🔍 Parsing API (Gemini Text)</h2>
+                        <div class="metric">
+                            <span class="metric-label">Total Calls</span>
+                            <span class="metric-value" id="apiParseCalls">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Estimated Tokens</span>
+                            <span class="metric-value" id="apiParseTokens">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Avg Tokens/Call</span>
+                            <span class="metric-value" id="apiParseAvg">0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Estimated Cost</span>
+                            <span class="metric-value warning" id="apiParseCost">$0.00</span>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <h2>💰 Cost Summary</h2>
+                        <div class="large-metric">
+                            <div class="large-number" style="font-size: 36px;" id="apiTotalCost">$0.00</div>
+                            <div class="large-label">Total Estimated Cost</div>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">OCR Cost</span>
+                            <span class="metric-value" id="apiOcrCostSummary">$0.00</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Parsing Cost</span>
+                            <span class="metric-value" id="apiParseCostSummary">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <h2>📈 API Pricing Reference</h2>
+                    <div class="metric">
+                        <span class="metric-label">OCR (Gemini Flash Vision)</span>
+                        <span class="metric-value">$0.0001875 / 1K tokens</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Parsing (Gemini Flash Text)</span>
+                        <span class="metric-value">$0.000075 / 1K tokens</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Avg OCR per Image</span>
+                        <span class="metric-value">~2000 tokens (~$0.000375)</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Avg Parse per Invoice</span>
+                        <span class="metric-value">~1000 tokens (~$0.000075)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="refresh-info">
+            Auto-refreshing every 10 seconds | Last updated: <span id="lastUpdate">Never</span>
+        </div>
+    </div>
+    
+    <script>
+        let currentTab = 'overview';
+        let autoRefreshInterval = null;
+        
+        function switchTab(tabName) {
+            // Update button states
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Update content visibility
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(tabName + '-tab').classList.add('active');
+            
+            currentTab = tabName;
+            
+            // Load data for the tab
+            if (tabName === 'logs') {
+                loadLogs();
+            } else if (tabName === 'overview' || tabName === 'api') {
+                updateDashboard();
+            }
+        }
+        
+        async function updateDashboard() {
+            try {
+                const [healthRes, metricsRes] = await Promise.all([
+                    fetch('/health'),
+                    fetch('/metrics')
+                ]);
+                
+                const health = await healthRes.json();
+                const metrics = await metricsRes.json();
+                
+                // Update status
+                const statusDot = document.getElementById('statusDot');
+                const statusText = document.getElementById('statusText');
+                statusDot.className = 'status-dot status-' + health.status;
+                statusText.textContent = health.status.charAt(0).toUpperCase() + health.status.slice(1);
+                
+                // Update overview metrics
+                const inv = metrics.invoices || {};
+                document.getElementById('totalInvoices').textContent = inv.total || 0;
+                document.getElementById('successCount').textContent = inv.success || 0;
+                document.getElementById('failedCount').textContent = inv.failed || 0;
+                
+                const successRate = inv.total > 0 ? ((inv.success / inv.total) * 100).toFixed(1) : 0;
+                document.getElementById('successRate').textContent = successRate + '%';
+                
+                const api = metrics.api_calls || {};
+                document.getElementById('ocrCalls').textContent = (api.ocr?.count || 0).toLocaleString();
+                document.getElementById('parseCalls').textContent = (api.parsing?.count || 0).toLocaleString();
+                document.getElementById('totalCost').textContent = '$' + (api.total_cost_usd || 0).toFixed(4);
+                
+                const uptime = metrics.uptime_seconds || 0;
+                const hours = Math.floor(uptime / 3600);
+                const minutes = Math.floor((uptime % 3600) / 60);
+                document.getElementById('uptime').textContent = hours + 'h ' + minutes + 'm';
+                
+                const perf = metrics.performance || {};
+                document.getElementById('avgTime').textContent = (perf.avg_processing_time_seconds || 0).toFixed(2) + 's';
+                document.getElementById('activeSessions').textContent = perf.active_sessions || 0;
+                
+                // Update integrations
+                const integrations = health.integrations || {};
+                updateIntegration('telegram', integrations.telegram_connected);
+                updateIntegration('sheets', integrations.sheets_accessible);
+                updateIntegration('gemini', integrations.gemini_api_available);
+                
+                // Update API details tab
+                const ocr = api.ocr || {};
+                const parsing = api.parsing || {};
+                
+                document.getElementById('apiOcrCalls').textContent = (ocr.count || 0).toLocaleString();
+                document.getElementById('apiOcrTokens').textContent = (ocr.estimated_tokens || 0).toLocaleString();
+                document.getElementById('apiOcrAvg').textContent = (ocr.avg_tokens_per_call || 0).toLocaleString();
+                document.getElementById('apiOcrCost').textContent = '$' + (ocr.estimated_cost_usd || 0).toFixed(6);
+                document.getElementById('apiOcrCostSummary').textContent = '$' + (ocr.estimated_cost_usd || 0).toFixed(6);
+                
+                document.getElementById('apiParseCalls').textContent = (parsing.count || 0).toLocaleString();
+                document.getElementById('apiParseTokens').textContent = (parsing.estimated_tokens || 0).toLocaleString();
+                document.getElementById('apiParseAvg').textContent = (parsing.avg_tokens_per_call || 0).toLocaleString();
+                document.getElementById('apiParseCost').textContent = '$' + (parsing.estimated_cost_usd || 0).toFixed(6);
+                document.getElementById('apiParseCostSummary').textContent = '$' + (parsing.estimated_cost_usd || 0).toFixed(6);
+                
+                document.getElementById('apiTotalCost').textContent = '$' + (api.total_cost_usd || 0).toFixed(4);
+                
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+                
+            } catch (error) {
+                console.error('Failed to update dashboard:', error);
+                document.getElementById('statusText').textContent = 'Connection Error';
+                document.getElementById('statusDot').className = 'status-dot status-error';
+            }
+        }
+        
+        function updateIntegration(name, isOnline) {
+            const statusDiv = document.getElementById(name + 'Status');
+            const textDiv = document.getElementById(name + 'Text');
+            
+            if (isOnline) {
+                statusDiv.className = 'integration-item online';
+                textDiv.textContent = '✅ Online';
+            } else {
+                statusDiv.className = 'integration-item offline';
+                textDiv.textContent = '❌ Offline';
+            }
+        }
+        
+        async function loadLogs() {
+            const search = document.getElementById('logSearch').value;
+            const level = document.getElementById('logLevel').value;
+            const lines = document.getElementById('logLines').value;
+            
+            const params = new URLSearchParams();
+            if (search) params.append('search', search);
+            if (level) params.append('level', level);
+            params.append('lines', lines);
+            
+            try {
+                const response = await fetch('/logs?' + params.toString());
+                const data = await response.json();
+                
+                document.getElementById('totalLines').textContent = data.total_lines;
+                document.getElementById('filteredLines').textContent = data.filtered_lines;
+                document.getElementById('returnedLines').textContent = data.returned_lines;
+                
+                const logViewer = document.getElementById('logViewer');
+                if (data.logs && data.logs.length > 0) {
+                    logViewer.innerHTML = data.logs.map(line => {
+                        let level = '';
+                        if (line.includes('[DEBUG]')) level = 'DEBUG';
+                        else if (line.includes('[INFO]')) level = 'INFO';
+                        else if (line.includes('[WARNING]')) level = 'WARNING';
+                        else if (line.includes('[ERROR]')) level = 'ERROR';
+                        else if (line.includes('[CRITICAL]')) level = 'CRITICAL';
+                        
+                        return `<div class="log-line ${level}">${escapeHtml(line)}</div>`;
+                    }).join('');
+                    
+                    // Auto-scroll to bottom
+                    logViewer.scrollTop = logViewer.scrollHeight;
+                } else {
+                    logViewer.innerHTML = '<div style="text-align: center; color: #888;">No logs found</div>';
+                }
+            } catch (error) {
+                console.error('Failed to load logs:', error);
+                document.getElementById('logViewer').innerHTML = 
+                    '<div style="text-align: center; color: #F44336;">Failed to load logs: ' + error.message + '</div>';
+            }
+        }
+        
+        function clearLogFilters() {
+            document.getElementById('logSearch').value = '';
+            document.getElementById('logLevel').value = '';
+            document.getElementById('logLines').value = '100';
+            loadLogs();
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Initialize
+        updateDashboard();
+        
+        // Auto-refresh every 10 seconds
+        setInterval(() => {
+            if (currentTab !== 'logs') {
+                updateDashboard();
+            }
+        }, 10000);
+    </script>
+</body>
+</html>
