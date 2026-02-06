@@ -40,6 +40,14 @@ if config.ENABLE_AUDIT_LOGGING:
 # Tier 3 imports
 from commands.tier3_commands import Tier3CommandHandlers
 
+# ═══════════════════════════════════════════════════════════════════
+# Epic 2: Order Upload & Normalization (Feature-Flagged)
+# ═══════════════════════════════════════════════════════════════════
+if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+    from order_normalization import OrderSession, OrderNormalizationOrchestrator
+    print("[OK] Epic 2: Order Upload module loaded")
+# ═══════════════════════════════════════════════════════════════════
+
 
 async def setup_bot_commands(application):
     """
@@ -86,6 +94,20 @@ class GSTScannerBot:
         else:
             self.audit_logger = None
         
+        # ═══════════════════════════════════════════════════════
+        # Usage Tracking (NEW - Phase 1)
+        # ═══════════════════════════════════════════════════════
+        if config.ENABLE_USAGE_TRACKING:
+            from utils.usage_tracker import get_usage_tracker
+            from utils.metrics_tracker import get_metrics_tracker
+            self.usage_tracker = get_usage_tracker()
+            self.metrics_tracker = get_metrics_tracker()
+            print("[OK] Usage tracking initialized")
+        else:
+            self.usage_tracker = None
+            self.metrics_tracker = None
+        # ═══════════════════════════════════════════════════════
+        
         # Create temp folder if it doesn't exist
         os.makedirs(config.TEMP_FOLDER, exist_ok=True)
         
@@ -95,6 +117,18 @@ class GSTScannerBot:
         
         # Tier 3 command handlers
         self.tier3_handlers = Tier3CommandHandlers(self)
+        
+        # ═══════════════════════════════════════════════════════
+        # Epic 2: Order Upload & Normalization (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+            self.order_orchestrator = OrderNormalizationOrchestrator()
+            self.order_sessions = {}  # Separate from GST invoice sessions
+            print("[OK] Epic 2: Order processing orchestrator initialized")
+        else:
+            self.order_orchestrator = None
+            self.order_sessions = {}
+        # ═══════════════════════════════════════════════════════
 
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -188,10 +222,20 @@ Select an option from the menu below:
         """Create main menu with inline buttons"""
         keyboard = [
             [InlineKeyboardButton("📸 Upload Purchase Invoice", callback_data="menu_upload")],
+        ]
+        
+        # ═══════════════════════════════════════════════════════
+        # Epic 2: Conditional Order Upload button (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+            keyboard.append([InlineKeyboardButton("📦 Upload Order", callback_data="menu_order_upload")])
+        # ═══════════════════════════════════════════════════════
+        
+        keyboard.extend([
             [InlineKeyboardButton("📊 Generate GST Input", callback_data="menu_generate")],
             [InlineKeyboardButton("❓ Help", callback_data="menu_help")],
             [InlineKeyboardButton("📈 Usage & Stats", callback_data="menu_usage")],
-        ]
+        ])
         return InlineKeyboardMarkup(keyboard)
 
     def create_upload_submenu(self):
@@ -338,6 +382,34 @@ Need assistance? Contact your administrator.
                 "Select what you'd like to view:",
                 reply_markup=self.create_usage_submenu()
             )
+        
+        # ═══════════════════════════════════════════════════════
+        # Epic 2: ORDER UPLOAD MENU (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        elif callback_data == "menu_order_upload":
+            # Check feature flag
+            if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+                await query.edit_message_text(
+                    "⚠️ Order upload feature is not enabled.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            
+            # Start order upload session
+            order_session = OrderSession(user_id, update.effective_user.username)
+            self.order_sessions[user_id] = order_session
+            
+            await query.edit_message_text(
+                "📦 Upload Order (Handwritten Notes)\n\n"
+                "✅ Ready to receive order pages!\n\n"
+                "**Instructions:**\n"
+                "1. Send me photos of handwritten order notes\n"
+                "2. You can send multiple pages if the order spans multiple sheets\n"
+                "3. Type /order_submit when you've sent all pages\n\n"
+                "I'll extract the line items, match with pricing, and generate a clean PDF.\n\n"
+                "Type /cancel to abort."
+            )
+        # ═══════════════════════════════════════════════════════
         
         # ═══════════════════════════════════════════════════════
         # UPLOAD SUBMENU ACTIONS
@@ -900,7 +972,27 @@ Use /reports for detailed analysis"""
                 is_duplicate_override
             )
             
+            # ═══════════════════════════════════════════════════════
+            # CRITICAL: Send success to user IMMEDIATELY (Phase 3)
+            # ═══════════════════════════════════════════════════════
             await update.message.reply_text(success_message)  # No Markdown - plain text only
+            # User now has confirmation - invoice processing COMPLETE
+            # ═══════════════════════════════════════════════════════
+            
+            # ═══════════════════════════════════════════════════════
+            # NEW: Track usage in background AFTER user response (Phase 3)
+            # ═══════════════════════════════════════════════════════
+            if config.ENABLE_USAGE_TRACKING and self.usage_tracker:
+                # Fire-and-forget background task
+                asyncio.create_task(
+                    self._track_invoice_complete_async(
+                        user_id=user_id,
+                        username=update.effective_user.username,
+                        session=session.copy(),  # Copy to avoid mutations
+                        end_time=end_time
+                    )
+                )
+            # ═══════════════════════════════════════════════════════
             
             # Clear user session
             self._clear_user_session(user_id)
@@ -962,6 +1054,128 @@ Use /reports for detailed analysis"""
             
         except Exception as e:
             print(f"[WARNING] Could not update metrics: {e}")
+    
+    # ═══════════════════════════════════════════════════════
+    # Background Tracking Task (NEW - Phase 3)
+    # ═══════════════════════════════════════════════════════
+    
+    async def _track_invoice_complete_async(
+        self,
+        user_id: int,
+        username: str,
+        session: Dict,
+        end_time: datetime
+    ):
+        """
+        Background task - tracks invoice completion AFTER user gets response.
+        This runs asynchronously and can take as long as needed without impacting UX.
+        
+        Args:
+            user_id: Telegram user ID
+            username: Telegram username
+            session: Copy of user session data
+            end_time: Processing end time
+        """
+        try:
+            start_time = session.get('start_time', end_time)
+            processing_time = (end_time - start_time).total_seconds()
+            
+            invoice_data = session['data']['invoice_data']
+            invoice_id = invoice_data.get('Invoice_No', 'unknown')
+            
+            # Extract timing information
+            ocr_time = session.get('_ocr_metadata', {}).get('ocr_time_seconds', 0)
+            parsing_time = session.get('_parsing_metadata', {}).get('parsing_time_seconds', 0)
+            sheets_time = processing_time - ocr_time - parsing_time
+            
+            # Get validation status
+            validation_result = session.get('validation_result', {})
+            validation_status = validation_result.get('status', 'unknown')
+            
+            # Get confidence average
+            confidence_scores = session.get('confidence_scores', {})
+            if confidence_scores:
+                conf_values = [v for v in confidence_scores.values() if isinstance(v, (int, float))]
+                confidence_avg = sum(conf_values) / len(conf_values) if conf_values else 0.0
+            else:
+                confidence_avg = 0.0
+            
+            # Check if corrections were made
+            had_corrections = bool(session.get('corrections'))
+            
+            # Track OCR calls (Level 1)
+            ocr_call_ids = []
+            if config.ENABLE_OCR_LEVEL_TRACKING:
+                pages_metadata = session.get('_ocr_metadata', {}).get('pages', [])
+                for page_meta in pages_metadata:
+                    ocr_record = self.usage_tracker.record_ocr_call(
+                        invoice_id=invoice_id,
+                        page_number=page_meta.get('page_number', 1),
+                        model_name="gemini-2.5-flash",
+                        prompt_tokens=page_meta.get('prompt_tokens', 0),
+                        output_tokens=page_meta.get('output_tokens', 0),
+                        processing_time_ms=int(ocr_time * 1000 / len(pages_metadata)) if pages_metadata else 0,
+                        image_size_bytes=page_meta.get('image_size_bytes', 0),
+                        customer_id=config.DEFAULT_CUSTOMER_ID,
+                        telegram_user_id=user_id,
+                        status="success"
+                    )
+                    if ocr_record:
+                        ocr_call_ids.append(ocr_record.get('call_id', ''))
+            
+            # Calculate token totals
+            pages_metadata = session.get('_ocr_metadata', {}).get('pages', [])
+            ocr_prompt_tokens = sum(p.get('prompt_tokens', 0) for p in pages_metadata)
+            ocr_output_tokens = sum(p.get('output_tokens', 0) for p in pages_metadata)
+            ocr_total_tokens = ocr_prompt_tokens + ocr_output_tokens
+            
+            # Parsing tokens (estimated from text length if not available)
+            parsing_text_length = session.get('_parsing_metadata', {}).get('ocr_text_length', 0)
+            parsing_prompt_tokens = int(parsing_text_length * 0.75)
+            parsing_output_tokens = int(parsing_prompt_tokens * 0.3)
+            parsing_total_tokens = parsing_prompt_tokens + parsing_output_tokens
+            
+            # Track Invoice usage (Level 2)
+            if config.ENABLE_INVOICE_LEVEL_TRACKING:
+                invoice_record = self.usage_tracker.record_invoice_usage(
+                    invoice_id=invoice_id,
+                    customer_id=config.DEFAULT_CUSTOMER_ID,
+                    telegram_user_id=user_id,
+                    telegram_username=username or "unknown",
+                    page_count=len(session.get('images', [])),
+                    total_ocr_calls=len(pages_metadata),
+                    total_parsing_calls=2,  # Header + line items
+                    ocr_tokens={
+                        'prompt': ocr_prompt_tokens,
+                        'output': ocr_output_tokens,
+                        'total': ocr_total_tokens
+                    },
+                    parsing_tokens={
+                        'prompt': parsing_prompt_tokens,
+                        'output': parsing_output_tokens,
+                        'total': parsing_total_tokens
+                    },
+                    processing_time_seconds=processing_time,
+                    ocr_time_seconds=ocr_time,
+                    parsing_time_seconds=parsing_time,
+                    sheets_time_seconds=sheets_time,
+                    validation_status=validation_status,
+                    confidence_avg=confidence_avg,
+                    had_corrections=had_corrections,
+                    ocr_call_ids=ocr_call_ids
+                )
+                
+                # Update customer summary (Level 3)
+                if invoice_record and config.ENABLE_CUSTOMER_AGGREGATION:
+                    self.usage_tracker.update_customer_summary(invoice_record)
+            
+            print(f"[BACKGROUND] Usage tracked for invoice {invoice_id}")
+            
+        except Exception as e:
+            # Silent fail - user already has their success message
+            print(f"[BACKGROUND] Tracking failed (user unaffected): {e}")
+    
+    # ═══════════════════════════════════════════════════════
     
     def _update_seller_master_data(self, invoice_data: Dict):
         """Update seller_master sheet with seller information from invoice"""
@@ -1112,12 +1326,45 @@ Use /reports for detailed analysis"""
         try:
             # Step 1: OCR - Extract text from all images
             await update.message.reply_text("📄 Step 1/4: Extracting text from images...")
-            ocr_text = self.ocr_engine.extract_text_from_images(image_paths)
+            ocr_start_time = datetime.now()
+            
+            ocr_result = self.ocr_engine.extract_text_from_images(image_paths)
+            
+            # Handle both old (str) and new (dict) return types for backward compatibility
+            if isinstance(ocr_result, dict):
+                ocr_text = ocr_result['text']
+                # ═══════════════════════════════════════════════════════
+                # NEW: Store OCR metadata for background tracking (Phase 2)
+                # ═══════════════════════════════════════════════════════
+                if config.ENABLE_USAGE_TRACKING and 'pages_metadata' in ocr_result:
+                    session['_ocr_metadata'] = {
+                        'pages': ocr_result['pages_metadata'],
+                        'ocr_time_seconds': (datetime.now() - ocr_start_time).total_seconds()
+                    }
+                # ═══════════════════════════════════════════════════════
+            else:
+                # Backward compatibility: old code returned string directly
+                ocr_text = ocr_result
+            
             session['ocr_text'] = ocr_text
             
             # Step 2: Parse GST data with Tier 1 (line items + validation)
             await update.message.reply_text("🔍 Step 2/4: Parsing invoice and line items...")
+            parsing_start_time = datetime.now()
+            
             result = self.gst_parser.parse_invoice_with_validation(ocr_text)
+            
+            parsing_time_seconds = (datetime.now() - parsing_start_time).total_seconds()
+            
+            # ═══════════════════════════════════════════════════════
+            # NEW: Store parsing metadata (Phase 2)
+            # ═══════════════════════════════════════════════════════
+            if config.ENABLE_USAGE_TRACKING:
+                session['_parsing_metadata'] = {
+                    'parsing_time_seconds': parsing_time_seconds,
+                    'ocr_text_length': len(ocr_text)
+                }
+            # ═══════════════════════════════════════════════════════
             
             invoice_data = result['invoice_data']
             line_items = result['line_items']
@@ -1198,9 +1445,122 @@ Please try again or contact support if the issue persists.
             await update.message.reply_text(error_message)
             print(f"Error processing invoice for user {user_id}: {str(e)}")
     
+    # ═══════════════════════════════════════════════════════════════════
+    # Epic 2: ORDER UPLOAD COMMANDS (Feature-Flagged)
+    # ═══════════════════════════════════════════════════════════════════
+    
+    async def order_submit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /order_submit command - process uploaded order pages"""
+        if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+            await update.message.reply_text("⚠️ Order upload feature is not enabled.")
+            return
+        
+        user_id = update.effective_user.id
+        
+        # Check if user has an active order session
+        if user_id not in self.order_sessions:
+            await update.message.reply_text(
+                "❌ No active order session.\n\n"
+                "Click 📦 Upload Order from the main menu to start."
+            )
+            return
+        
+        order_session = self.order_sessions[user_id]
+        
+        # Submit the order
+        if not order_session.submit():
+            await update.message.reply_text(
+                "❌ Cannot submit order.\n\n"
+                "Please upload at least one page, or the order is already submitted."
+            )
+            return
+        
+        await update.message.reply_text(
+            f"✅ Order submitted!\n\n"
+            f"📄 Order ID: {order_session.order_id}\n"
+            f"📄 Pages: {len(order_session.pages)}\n\n"
+            f"Processing your order... This may take a moment."
+        )
+        
+        # Process the order asynchronously
+        try:
+            await self.order_orchestrator.process_order(order_session, update)
+        except Exception as e:
+            print(f"[ERROR] Order processing failed: {e}")
+            await update.message.reply_text(
+                f"❌ Order processing failed: {str(e)}\n\n"
+                f"Please try again or contact support."
+            )
+        finally:
+            # Clean up session
+            if user_id in self.order_sessions:
+                del self.order_sessions[user_id]
+    
+    async def handle_order_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle order photo uploads (separate from invoice photos)"""
+        if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+            return  # Silently ignore if feature disabled
+        
+        user_id = update.effective_user.id
+        
+        # Check if user has an active order session
+        if user_id not in self.order_sessions:
+            # Not in order mode, let normal invoice handler take care of it
+            return
+        
+        order_session = self.order_sessions[user_id]
+        
+        # Check max images
+        if len(order_session.pages) >= config.MAX_IMAGES_PER_ORDER:
+            await update.message.reply_text(
+                f"⚠️ Maximum {config.MAX_IMAGES_PER_ORDER} pages per order.\n"
+                f"Type /order_submit to process or /cancel to start over."
+            )
+            return
+        
+        # Download photo
+        photo = update.message.photo[-1]
+        
+        try:
+            file = await photo.get_file()
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"order_{user_id}_{timestamp}.jpg"
+            filepath = os.path.join(config.TEMP_FOLDER, filename)
+            
+            await file.download_to_drive(filepath)
+            
+            # Add page to order session
+            page_number = order_session.add_page(filepath)
+            
+            await update.message.reply_text(
+                f"✅ Page {page_number} received!\n\n"
+                f"Send more pages or type /order_submit to process."
+            )
+            
+        except Exception as e:
+            print(f"[ERROR] Order photo download failed: {e}")
+            await update.message.reply_text(
+                f"❌ Failed to download image: {str(e)}\n"
+                f"Please try again."
+            )
+    
+    # ═══════════════════════════════════════════════════════════════════
+    
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming photo messages"""
         user_id = update.effective_user.id
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # Epic 2: Check if this is an order photo (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════════════════
+        if config.FEATURE_ORDER_UPLOAD_NORMALIZATION and user_id in self.order_sessions:
+            # This is an order photo, not an invoice photo
+            await self.handle_order_photo(update, context)
+            return
+        # ═══════════════════════════════════════════════════════════════════
+        
+        # Normal GST invoice photo handling
         session = self._get_user_session(user_id)
         
         if session['state'] != 'uploading':
@@ -1429,6 +1789,14 @@ Please try again or contact support if the issue persists.
         application.add_handler(CommandHandler("export_gstr3b", self.tier3_handlers.export_gstr3b_command))
         application.add_handler(CommandHandler("reports", self.tier3_handlers.reports_command))
         application.add_handler(CommandHandler("stats", self.tier3_handlers.stats_command))
+        
+        # ═══════════════════════════════════════════════════════
+        # Epic 2: Order Upload command handlers (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+            application.add_handler(CommandHandler("order_submit", self.order_submit_command))
+            print("[OK] Epic 2: Order upload commands registered")
+        # ═══════════════════════════════════════════════════════
         
         # Add callback query handler for inline buttons
         application.add_handler(CallbackQueryHandler(self.handle_menu_callback))

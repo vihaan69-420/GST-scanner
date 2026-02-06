@@ -184,6 +184,40 @@ HEALTH_SERVER_PORT = int(os.getenv('HEALTH_SERVER_PORT', '8080'))
 HEALTH_SERVER_ENABLED = os.getenv('HEALTH_SERVER_ENABLED', 'true').lower() == 'true'
 METRICS_SAVE_INTERVAL = int(os.getenv('METRICS_SAVE_INTERVAL', '300'))  # 5 minutes
 
+# ═══════════════════════════════════════════════════════
+# USAGE TRACKING & COST ESTIMATION (NEW)
+# ═══════════════════════════════════════════════════════
+
+# Master switch - disables all tracking if false
+ENABLE_USAGE_TRACKING = os.getenv('ENABLE_USAGE_TRACKING', 'false').lower() == 'true'
+
+# Individual feature switches (require master=true)
+ENABLE_OCR_LEVEL_TRACKING = os.getenv('ENABLE_OCR_LEVEL_TRACKING', 'false').lower() == 'true'
+ENABLE_INVOICE_LEVEL_TRACKING = os.getenv('ENABLE_INVOICE_LEVEL_TRACKING', 'false').lower() == 'true'
+ENABLE_CUSTOMER_AGGREGATION = os.getenv('ENABLE_CUSTOMER_AGGREGATION', 'false').lower() == 'true'
+ENABLE_SUMMARY_GENERATION = os.getenv('ENABLE_SUMMARY_GENERATION', 'false').lower() == 'true'
+ENABLE_OUTLIER_DETECTION = os.getenv('ENABLE_OUTLIER_DETECTION', 'false').lower() == 'true'
+
+# Token capture method
+ENABLE_ACTUAL_TOKEN_CAPTURE = os.getenv('ENABLE_ACTUAL_TOKEN_CAPTURE', 'true').lower() == 'true'
+
+# Customer identifier (single customer for now)
+DEFAULT_CUSTOMER_ID = os.getenv('DEFAULT_CUSTOMER_ID', 'CUST001')
+DEFAULT_CUSTOMER_NAME = os.getenv('DEFAULT_CUSTOMER_NAME', 'Default Customer')
+
+# Gemini API Pricing (Configurable)
+GEMINI_OCR_PRICE_PER_1K_TOKENS = float(os.getenv('GEMINI_OCR_PRICE_PER_1K_TOKENS', '0.0001875'))
+GEMINI_PARSING_PRICE_PER_1K_TOKENS = float(os.getenv('GEMINI_PARSING_PRICE_PER_1K_TOKENS', '0.000075'))
+
+# Rate limits (optional monitoring)
+GEMINI_RATE_LIMIT_RPM = int(os.getenv('GEMINI_RATE_LIMIT_RPM', '15'))
+GEMINI_RATE_LIMIT_TPM = int(os.getenv('GEMINI_RATE_LIMIT_TPM', '1000000'))
+
+# Outlier Detection Thresholds
+OUTLIER_COST_ZSCORE_THRESHOLD = float(os.getenv('OUTLIER_COST_ZSCORE_THRESHOLD', '2.0'))
+OUTLIER_PAGE_COUNT_THRESHOLD = int(os.getenv('OUTLIER_PAGE_COUNT_THRESHOLD', '10'))
+OUTLIER_TOKEN_PERCENTILE_THRESHOLD = int(os.getenv('OUTLIER_TOKEN_PERCENTILE_THRESHOLD', '95'))
+
 # Google Sheets Column Mapping
 # Tier 1 columns (original 24 fields)
 SHEET_COLUMNS = [
@@ -287,6 +321,28 @@ DUPLICATE_ATTEMPTS_COLUMNS = [
     'Invoice_No',
     'Action_Taken'
 ]
+
+# ═══════════════════════════════════════════════════════════════════
+# EPIC 2: ORDER UPLOAD & NORMALIZATION
+# ═══════════════════════════════════════════════════════════════════
+
+# Master feature flag - disables entire Epic 2 feature when false
+FEATURE_ORDER_UPLOAD_NORMALIZATION = os.getenv('FEATURE_ORDER_UPLOAD_NORMALIZATION', 'false').lower() == 'true'
+
+# Pricing sheet configuration (configurable for future migration to Google Sheets)
+PRICING_SHEET_SOURCE = os.getenv('PRICING_SHEET_SOURCE', 'google_sheet')  # 'local_file' or 'google_sheet'
+PRICING_SHEET_PATH = os.getenv('PRICING_SHEET_PATH', 'Epic2 artifacts/UPDATED PRICE LIST FOR SAI-ABS 10 MAY-25.xls')
+PRICING_SHEET_ID = os.getenv('PRICING_SHEET_ID', '1uNUYg0tpBWn7flNENk_kWHvGdimXhhzq3VAQAeNd4GE')  # Google Sheet with pricing data
+PRICING_SHEET_NAME = os.getenv('PRICING_SHEET_NAME', 'Sheet1')  # Worksheet name in pricing sheet
+
+# Order-related Google Sheets tabs
+ORDER_SUMMARY_SHEET = os.getenv('ORDER_SUMMARY_SHEET', 'Orders')
+ORDER_LINE_ITEMS_SHEET = os.getenv('ORDER_LINE_ITEMS_SHEET', 'Order_Line_Items')
+ORDER_CUSTOMER_DETAILS_SHEET = os.getenv('ORDER_CUSTOMER_DETAILS_SHEET', 'Customer_Details')
+
+# Order-related configuration
+MAX_IMAGES_PER_ORDER = int(os.getenv('MAX_IMAGES_PER_ORDER', '10'))
+ORDER_FOLDER = get_writable_path('orders')  # Folder for order PDFs
 
 
 def validate_config():
