@@ -141,6 +141,12 @@ def get_writable_path(folder_name: str) -> str:
 
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+# BOT_ENV isolates production vs dev behaviour for bots
+#   - 'prod' (default): use TELEGRAM_BOT_TOKEN and full GST flow
+#   - 'dev' : use TELEGRAM_DEV_BOT_TOKEN and non-destructive dev bot
+BOT_ENV = os.getenv('BOT_ENV', 'prod').lower()
+# Dev bot token (used only when BOT_ENV='dev'). Production code paths must never read this.
+TELEGRAM_DEV_BOT_TOKEN = os.getenv('TELEGRAM_DEV_BOT_TOKEN')
 
 # Google Gemini Configuration
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -153,6 +159,15 @@ GOOGLE_SHEETS_CREDENTIALS_FILE = os.getenv(
 GOOGLE_SHEET_ID = os.getenv('GOOGLE_SHEET_ID')
 SHEET_NAME = os.getenv('SHEET_NAME', 'Invoice_Header')
 LINE_ITEMS_SHEET_NAME = os.getenv('LINE_ITEMS_SHEET_NAME', 'Line_Items')
+
+# Order Upload workbook & sheets (Phase 5)
+# Default: use same workbook as existing GST flows unless overridden.
+ORDER_UPLOAD_SHEET_ID = os.getenv('ORDER_UPLOAD_SHEET_ID', GOOGLE_SHEET_ID or '')
+RAW_OCR_SHEET_NAME = os.getenv('RAW_OCR_SHEET_NAME', 'Raw_OCR')
+NORMALIZED_LINES_SHEET_NAME = os.getenv('NORMALIZED_LINES_SHEET_NAME', 'Normalized_Lines')
+MATCHED_LINES_SHEET_NAME = os.getenv('MATCHED_LINES_SHEET_NAME', 'Matched_Lines')
+ORDER_ERRORS_SHEET_NAME = os.getenv('ORDER_ERRORS_SHEET_NAME', 'Errors')
+ORDER_SUMMARY_SHEET_NAME = os.getenv('ORDER_SUMMARY_SHEET_NAME', 'Order_Summary')
 
 # Application Configuration
 ALLOWED_IMAGE_FORMATS = os.getenv('ALLOWED_IMAGE_FORMATS', 'jpg,jpeg,png,pdf').split(',')
@@ -175,6 +190,12 @@ ENABLE_DEDUPLICATION = os.getenv('ENABLE_DEDUPLICATION', 'true').lower() == 'tru
 ENABLE_AUDIT_LOGGING = os.getenv('ENABLE_AUDIT_LOGGING', 'false').lower() == 'true'
 EXTRACTION_VERSION = os.getenv('EXTRACTION_VERSION', 'v1.0-tier2')
 CONFIDENCE_THRESHOLD_REVIEW = float(os.getenv('CONFIDENCE_THRESHOLD_REVIEW', '0.7'))
+
+# Order Upload & OCR (dev-only; must be feature-flagged)
+# When ENABLE_ORDER_UPLOAD=false (default), no new OCR/extraction behaviour is active.
+ENABLE_ORDER_UPLOAD = os.getenv('ENABLE_ORDER_UPLOAD', 'false').lower() == 'true'
+# Local path to .xlsx price list file (used if set; otherwise falls back to Google Sheets Price_List)
+LOCAL_PRICE_LIST_PATH = os.getenv('LOCAL_PRICE_LIST_PATH', '')
 
 # Monitoring Configuration
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -286,6 +307,52 @@ DUPLICATE_ATTEMPTS_COLUMNS = [
     'User_ID',
     'Invoice_No',
     'Action_Taken'
+]
+
+# Order Upload - Raw_OCR sheet
+RAW_OCR_COLUMNS = [
+    'order_id',
+    'page_no',
+    'raw_text',
+    'timestamp',
+]
+
+# Order Upload - Normalized_Lines sheet
+NORMALIZED_LINES_COLUMNS = [
+    'S.N',
+    'PART NAME',
+    'QTY',
+    'source_page',
+    'confidence',
+]
+
+# Order Upload - Matched_Lines sheet
+MATCHED_LINES_COLUMNS = [
+    'S.N',
+    'PART NAME',
+    'PART NUMBER',
+    'PRICE',
+    'QTY',
+    'LINE TOTAL',
+]
+
+# Order Upload - Errors sheet
+ORDER_ERRORS_COLUMNS = [
+    'order_id',
+    'error_type',
+    'description',
+]
+
+# Order Upload - Order_Summary sheet (one row per processed order)
+ORDER_SUMMARY_COLUMNS = [
+    'order_id',
+    'timestamp',
+    'total_images',
+    'lines_extracted',
+    'lines_matched',
+    'lines_unmatched',
+    'duplicates_skipped',
+    'grand_total',
 ]
 
 
