@@ -197,6 +197,7 @@ ENABLE_INVOICE_LEVEL_TRACKING = os.getenv('ENABLE_INVOICE_LEVEL_TRACKING', 'fals
 ENABLE_CUSTOMER_AGGREGATION = os.getenv('ENABLE_CUSTOMER_AGGREGATION', 'false').lower() == 'true'
 ENABLE_SUMMARY_GENERATION = os.getenv('ENABLE_SUMMARY_GENERATION', 'false').lower() == 'true'
 ENABLE_OUTLIER_DETECTION = os.getenv('ENABLE_OUTLIER_DETECTION', 'false').lower() == 'true'
+ENABLE_ORDER_TRACKING = os.getenv('ENABLE_ORDER_TRACKING', 'true').lower() == 'true'  # Order upload metrics
 
 # Token capture method
 ENABLE_ACTUAL_TOKEN_CAPTURE = os.getenv('ENABLE_ACTUAL_TOKEN_CAPTURE', 'true').lower() == 'true'
@@ -335,10 +336,16 @@ PRICING_SHEET_PATH = os.getenv('PRICING_SHEET_PATH', 'Epic2 artifacts/UPDATED PR
 PRICING_SHEET_ID = os.getenv('PRICING_SHEET_ID', '1uNUYg0tpBWn7flNENk_kWHvGdimXhhzq3VAQAeNd4GE')  # Google Sheet with pricing data
 PRICING_SHEET_NAME = os.getenv('PRICING_SHEET_NAME', 'Sheet1')  # Worksheet name in pricing sheet
 
+# LLM-based pricing fallback (uses Gemini for unmatched items - costs API tokens)
+ENABLE_LLM_PRICING_FALLBACK = os.getenv('ENABLE_LLM_PRICING_FALLBACK', 'true').lower() == 'true'
+
 # Order-related Google Sheets tabs
 ORDER_SUMMARY_SHEET = os.getenv('ORDER_SUMMARY_SHEET', 'Orders')
 ORDER_LINE_ITEMS_SHEET = os.getenv('ORDER_LINE_ITEMS_SHEET', 'Order_Line_Items')
 ORDER_CUSTOMER_DETAILS_SHEET = os.getenv('ORDER_CUSTOMER_DETAILS_SHEET', 'Customer_Details')
+
+# Tenant tracking tab
+TENANT_INFO_SHEET = os.getenv('TENANT_INFO_SHEET', 'Tenant_Info')
 
 # Order-related configuration
 MAX_IMAGES_PER_ORDER = int(os.getenv('MAX_IMAGES_PER_ORDER', '10'))
