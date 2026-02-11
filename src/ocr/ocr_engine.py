@@ -47,7 +47,7 @@ OUTPUT FORMAT:
 Plain text, preserving structure and line breaks.
 """
     
-    def extract_text_from_image(self, image_path: str) -> str:
+    def extract_text_from_image(self, image_path: str) -> Dict:
         """
         Extract text from a single invoice image
         
@@ -55,7 +55,7 @@ Plain text, preserving structure and line breaks.
             image_path: Path to the invoice image
             
         Returns:
-            Extracted text as string
+            Dict with 'text' and optional 'usage_metadata'
         """
         try:
             # Load and validate image
@@ -67,12 +67,27 @@ Plain text, preserving structure and line breaks.
             # Extract text from response
             extracted_text = response.text if response.text else ""
             
-            return extracted_text
+            # ═══════════════════════════════════════════════════════
+            # NEW: Capture token usage metadata (Phase 2)
+            # ═══════════════════════════════════════════════════════
+            result = {'text': extracted_text}
+            
+            # Capture actual token usage from API response
+            if config.ENABLE_USAGE_TRACKING and config.ENABLE_ACTUAL_TOKEN_CAPTURE:
+                if hasattr(response, 'usage_metadata'):
+                    result['usage_metadata'] = {
+                        'prompt_tokens': response.usage_metadata.prompt_token_count if hasattr(response.usage_metadata, 'prompt_token_count') else 0,
+                        'output_tokens': response.usage_metadata.candidates_token_count if hasattr(response.usage_metadata, 'candidates_token_count') else 0,
+                        'total_tokens': response.usage_metadata.total_token_count if hasattr(response.usage_metadata, 'total_token_count') else 0
+                    }
+            # ═══════════════════════════════════════════════════════
+            
+            return result
             
         except Exception as e:
             raise Exception(f"OCR failed for {image_path}: {str(e)}")
     
-    def extract_text_from_images(self, image_paths: List[str]) -> str:
+    def extract_text_from_images(self, image_paths: List[str]) -> Dict:
         """
         Extract text from multiple invoice images (multi-page invoice)
         
@@ -80,21 +95,34 @@ Plain text, preserving structure and line breaks.
             image_paths: List of paths to invoice images
             
         Returns:
-            Combined extracted text from all pages
+            Dict with 'text' (combined) and 'pages_metadata' (per-page usage)
         """
         all_text = []
+        pages_metadata = []
         
         for idx, image_path in enumerate(image_paths, 1):
             try:
                 print(f"Processing page {idx}/{len(image_paths)}: {os.path.basename(image_path)}")
                 
-                page_text = self.extract_text_from_image(image_path)
+                result = self.extract_text_from_image(image_path)
+                page_text = result['text']
                 
                 # Add page separator for multi-page invoices
                 if len(image_paths) > 1:
                     all_text.append(f"\n{'='*80}\n[PAGE {idx}]\n{'='*80}\n")
                 
                 all_text.append(page_text)
+                
+                # ═══════════════════════════════════════════════════════
+                # NEW: Collect usage metadata per page (Phase 2)
+                # ═══════════════════════════════════════════════════════
+                if 'usage_metadata' in result:
+                    page_metadata = result['usage_metadata'].copy()
+                    page_metadata['page_number'] = idx
+                    page_metadata['image_path'] = image_path
+                    page_metadata['image_size_bytes'] = os.path.getsize(image_path)
+                    pages_metadata.append(page_metadata)
+                # ═══════════════════════════════════════════════════════
                 
             except Exception as e:
                 print(f"Warning: Failed to process {image_path}: {str(e)}")
@@ -103,7 +131,10 @@ Plain text, preserving structure and line breaks.
         # Combine all pages
         combined_text = "\n".join(all_text)
         
-        return combined_text
+        return {
+            'text': combined_text,
+            'pages_metadata': pages_metadata
+        }
 
 
 if __name__ == "__main__":

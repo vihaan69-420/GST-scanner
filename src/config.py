@@ -4,6 +4,7 @@ Environment-agnostic: Works locally, in Docker, and on Google Cloud
 Loads environment variables and validates configuration
 """
 import os
+import json
 import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
@@ -350,6 +351,56 @@ TENANT_INFO_SHEET = os.getenv('TENANT_INFO_SHEET', 'Tenant_Info')
 # Order-related configuration
 MAX_IMAGES_PER_ORDER = int(os.getenv('MAX_IMAGES_PER_ORDER', '10'))
 ORDER_FOLDER = get_writable_path('orders')  # Folder for order PDFs
+
+
+# ═══════════════════════════════════════════════════════════════════
+# EPIC 3: MULTI-TENANCY & ENVIRONMENT PROVISIONING
+# ═══════════════════════════════════════════════════════════════════
+
+# Master feature flag - enables per-tenant Google Sheet isolation
+FEATURE_TENANT_SHEET_ISOLATION = os.getenv('FEATURE_TENANT_SHEET_ISOLATION', 'false').lower() == 'true'
+
+# Sheet naming template for new tenant sheets
+TENANT_SHEET_NAME_TEMPLATE = os.getenv('TENANT_SHEET_NAME_TEMPLATE', 'GST_Scanner_{tenant_id}')
+
+# Order tab column definitions (centralised from sheets_handler.py hardcoded values)
+ORDER_SUMMARY_COLUMNS = [
+    'Order_ID', 'Customer_Name', 'Order_Date', 'Status',
+    'Total_Items', 'Total_Quantity', 'Subtotal', 'Unmatched_Count',
+    'Page_Count', 'Created_By', 'Processed_At'
+]
+
+ORDER_LINE_ITEMS_COLUMNS = [
+    'Order_ID', 'Serial_No', 'Part_Name', 'Part_Number',
+    'Model', 'Color', 'Quantity', 'Rate', 'Line_Total', 'Match_Confidence'
+]
+
+ORDER_CUSTOMER_DETAILS_COLUMNS = [
+    'Customer_ID', 'Customer_Name', 'Contact',
+    'Last_Order_Date', 'Total_Orders'
+]
+
+# Complete registry of all data tabs and their column schemas
+# Used by SheetProvisioner to create tenant sheets with all tabs
+TENANT_SHEET_COLUMNS = {
+    SHEET_NAME: SHEET_COLUMNS,
+    LINE_ITEMS_SHEET_NAME: LINE_ITEM_COLUMNS,
+    CUSTOMER_MASTER_SHEET: CUSTOMER_MASTER_COLUMNS,
+    HSN_MASTER_SHEET: HSN_MASTER_COLUMNS,
+    DUPLICATE_ATTEMPTS_SHEET: DUPLICATE_ATTEMPTS_COLUMNS,
+    ORDER_SUMMARY_SHEET: ORDER_SUMMARY_COLUMNS,
+    ORDER_LINE_ITEMS_SHEET: ORDER_LINE_ITEMS_COLUMNS,
+    ORDER_CUSTOMER_DETAILS_SHEET: ORDER_CUSTOMER_DETAILS_COLUMNS,
+}
+
+# Subscription tiers (configurable via env var as JSON, or defaults)
+_default_tiers = json.dumps([
+    {"id": "free", "name": "Free", "description": "Basic access"},
+    {"id": "basic", "name": "Basic", "description": "Standard features"},
+    {"id": "premium", "name": "Premium", "description": "All features"}
+])
+SUBSCRIPTION_TIERS = json.loads(os.getenv('SUBSCRIPTION_TIERS', _default_tiers))
+DEFAULT_SUBSCRIPTION_TIER = os.getenv('DEFAULT_SUBSCRIPTION_TIER', 'free')
 
 
 def validate_config():

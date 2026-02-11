@@ -34,17 +34,45 @@ class Tier3CommandHandlers:
             bot_instance: Reference to main GSTScannerBot instance
         """
         self.bot = bot_instance
-        self.gstr1_exporter = GSTR1Exporter(bot_instance.sheets_manager)
-        self.gstr3b_generator = GSTR3BGenerator(bot_instance.sheets_manager)
-        self.reporter = OperationalReporter(bot_instance.sheets_manager)
-        
-        # Initialize batch processor
-        self.batch_processor = BatchProcessor(
-            bot_instance.ocr_engine,
-            bot_instance.gst_parser,
-            bot_instance.gst_parser.gst_validator,  # Fixed: use gst_validator not validator
-            bot_instance.sheets_manager
-        )
+        # Lazy-initialized — sheets_manager is None at bot startup
+        self._gstr1_exporter = None
+        self._gstr3b_generator = None
+        self._reporter = None
+        self._batch_processor = None
+    
+    def _ensure_initialized(self):
+        """Lazy-init exporters when sheets_manager is available"""
+        self.bot._ensure_sheets_manager()
+        if self._gstr1_exporter is None:
+            self._gstr1_exporter = GSTR1Exporter(self.bot.sheets_manager)
+            self._gstr3b_generator = GSTR3BGenerator(self.bot.sheets_manager)
+            self._reporter = OperationalReporter(self.bot.sheets_manager)
+            self._batch_processor = BatchProcessor(
+                self.bot.ocr_engine,
+                self.bot.gst_parser,
+                self.bot.gst_parser.gst_validator,
+                self.bot.sheets_manager
+            )
+    
+    @property
+    def gstr1_exporter(self):
+        self._ensure_initialized()
+        return self._gstr1_exporter
+    
+    @property
+    def gstr3b_generator(self):
+        self._ensure_initialized()
+        return self._gstr3b_generator
+    
+    @property
+    def reporter(self):
+        self._ensure_initialized()
+        return self._reporter
+    
+    @property
+    def batch_processor(self):
+        self._ensure_initialized()
+        return self._batch_processor
     
     # ════════════════════════════════════════════════════════════════════
     # BATCH PROCESSING COMMANDS
@@ -225,16 +253,16 @@ class Tier3CommandHandlers:
             result = self.reporter.generate_processing_stats()
             
             if result['success']:
-                message = "📊 **Processing Statistics**\n\n"
+                message = "📊 PROCESSING STATISTICS\n\n"
                 message += f"Total Invoices: {result['total_invoices']}\n\n"
-                message += "**Validation Status:**\n"
+                message += "VALIDATION STATUS\n"
                 
                 for status, count in result['status_breakdown'].items():
                     pct = result['status_percentages'].get(status, 0)
                     message += f"  {status}: {count} ({pct:.1f}%)\n"
                 
                 if result['top_errors']:
-                    message += "\n**Top Errors:**\n"
+                    message += "\n⚠️ TOP ERRORS\n"
                     for error in result['top_errors'][:3]:
                         message += f"  • {error['type']}: {error['count']}\n"
                 

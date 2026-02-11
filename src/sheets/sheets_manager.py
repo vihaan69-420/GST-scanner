@@ -30,8 +30,13 @@ def get_column_letter(col_num):
 class SheetsManager:
     """Manage Google Sheets operations for GST invoice data"""
     
-    def __init__(self):
-        """Initialize Google Sheets connection with environment-aware credentials"""
+    def __init__(self, sheet_id: str = None):
+        """Initialize Google Sheets connection with environment-aware credentials
+
+        Args:
+            sheet_id: Optional Google Sheet ID for per-tenant routing (Epic 3).
+                      When None, falls back to config.GOOGLE_SHEET_ID (default).
+        """
         # Define the scope
         scope = [
             'https://spreadsheets.google.com/feeds',
@@ -51,9 +56,10 @@ class SheetsManager:
             credentials, project = google.auth.default(scopes=scope)
             self.client = gspread.authorize(credentials)
         
-        # Open the spreadsheet
+        # Open the spreadsheet (per-tenant or shared)
+        target_sheet_id = sheet_id or config.GOOGLE_SHEET_ID
         try:
-            self.spreadsheet = self.client.open_by_key(config.GOOGLE_SHEET_ID)
+            self.spreadsheet = self.client.open_by_key(target_sheet_id)
             self.worksheet = self.spreadsheet.worksheet(config.SHEET_NAME)
             self.line_items_worksheet = self.spreadsheet.worksheet(config.LINE_ITEMS_SHEET_NAME)
         except Exception as e:

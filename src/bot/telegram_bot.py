@@ -77,6 +77,9 @@ async def setup_bot_commands(application):
     if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
         commands.insert(2, BotCommand("order_upload", "Start order upload session"))
     
+    # Epic 3: Subscribe command (always available)
+    commands.append(BotCommand("subscribe", "Manage subscription plan"))
+    
     await application.bot.set_my_commands(commands)
     print("[OK] Bot commands menu configured", flush=True)
     print(f"[OK] Menu commands: {[c.command for c in commands]}", flush=True)
@@ -155,13 +158,54 @@ class GSTScannerBot:
         self.tenant_manager = None
         self.pending_email_users = {}  # {user_id: {'first_name': ..., 'username': ...}}
         # ═══════════════════════════════════════════════════════
+        
+        # ═══════════════════════════════════════════════════════
+        # Epic 3: Per-tenant SheetsManager cache
+        # ═══════════════════════════════════════════════════════
+        self._tenant_sheets_cache = {}  # {sheet_id: SheetsManager}
+        # ═══════════════════════════════════════════════════════
 
     
-    def _ensure_sheets_manager(self):
-        """Lazy initialize SheetsManager on first use"""
-        if self.sheets_manager is None:
-            self.sheets_manager = SheetsManager()
-            print("[OK] SheetsManager initialized (lazy)")
+    def _ensure_sheets_manager(self, sheet_id: str = None):
+        """Lazy initialize SheetsManager on first use.
+
+        Args:
+            sheet_id: Optional per-tenant sheet ID (Epic 3). When provided and
+                      FEATURE_TENANT_SHEET_ISOLATION is ON, returns a tenant-specific
+                      SheetsManager. Otherwise returns the shared instance.
+        """
+        if not config.FEATURE_TENANT_SHEET_ISOLATION:
+            # Feature OFF: original behaviour -- single shared manager
+            if self.sheets_manager is None:
+                self.sheets_manager = SheetsManager()
+                print("[OK] SheetsManager initialized (lazy)")
+            return
+
+        # Feature ON: per-tenant routing via cache (None key = shared)
+        cache_key = sheet_id  # None means shared sheet
+        if cache_key not in self._tenant_sheets_cache:
+            self._tenant_sheets_cache[cache_key] = SheetsManager(sheet_id=sheet_id)
+            if sheet_id:
+                print(f"[OK] Tenant SheetsManager initialized for sheet {sheet_id[:12]}...")
+            else:
+                print("[OK] SheetsManager initialized (shared, tenant isolation ON)")
+        self.sheets_manager = self._tenant_sheets_cache[cache_key]
+
+    def _get_tenant_sheet_id(self, user_id: int):
+        """Get tenant-specific sheet ID if feature is enabled (Epic 3).
+
+        Returns:
+            Sheet ID string or None (falls back to shared sheet).
+        """
+        if not config.FEATURE_TENANT_SHEET_ISOLATION:
+            return None
+        self._ensure_tenant_manager()
+        if self.tenant_manager:
+            try:
+                return self.tenant_manager.get_tenant_sheet_id(user_id)
+            except Exception as e:
+                print(f"[WARNING] Could not get tenant sheet_id for {user_id}: {e}")
+        return None
     
     def _ensure_tenant_manager(self):
         """Lazy initialize TenantManager on first use"""
@@ -175,24 +219,59 @@ class GSTScannerBot:
                 self.tenant_manager = None
     
     async def _check_registration_pending(self, update: Update) -> bool:
-        """Check if user has a pending registration. Returns True if blocked."""
+        """Check if user has a pending registration or is not registered at all.
+        Returns True if blocked (user must complete registration first)."""
         user_id = update.effective_user.id
+        user = update.effective_user
+
+        # Case 1: Already in the middle of registration
         if user_id in self.pending_email_users:
             info = self.pending_email_users[user_id]
             if info.get('needs_name'):
                 await update.message.reply_text(
                     "⚠️ Please complete registration first.\n\n"
-                    "Send your **name** and **email** separated by a comma.\n"
-                    "Example: `John Doe, john@example.com`",
-                    parse_mode='Markdown'
+                    "Send your name and email separated by a comma.\n"
+                    "Example: John Doe, john@example.com"
                 )
             else:
                 await update.message.reply_text(
                     "⚠️ Please complete registration first.\n\n"
-                    "Send your **email ID** to continue:",
-                    parse_mode='Markdown'
+                    "Send your email ID to continue:"
                 )
             return True
+
+        # Case 2: Not registered at all — start registration flow
+        try:
+            self._ensure_tenant_manager()
+            if self.tenant_manager:
+                tenant = self.tenant_manager.get_tenant(user_id)
+                if not tenant:
+                    # User has no tenant — initiate registration
+                    tg_username = user.username or ''
+                    tg_full_name = user.full_name or user.first_name or ''
+                    self.pending_email_users[user_id] = {
+                        'full_name': tg_full_name,
+                        'username': tg_username,
+                        'needs_name': not tg_username,
+                    }
+                    if tg_username:
+                        await update.message.reply_text(
+                            "📝 One-time registration required\n\n"
+                            "Please share your email ID to complete registration:"
+                        )
+                    else:
+                        await update.message.reply_text(
+                            "📝 One-time registration required\n\n"
+                            "Please share your name and email ID "
+                            "(separated by a comma) to complete registration.\n\n"
+                            "Example: John Doe, john@example.com"
+                        )
+                    return True
+        except Exception as e:
+            print(f"[WARNING] Tenant check failed in registration guard: {e}")
+            # If tenant check fails, allow through to avoid blocking users
+            # when the tenant service is unavailable
+
         return False
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,7 +283,7 @@ class GSTScannerBot:
 
 I help you extract GST invoice data and append it to Google Sheets automatically.
 
-🎯 **What I can do:**
+🎯 WHAT I CAN DO
 • Extract invoice data from images
 • Validate GST numbers and calculations
 • Save to Google Sheets with line items
@@ -212,8 +291,7 @@ I help you extract GST invoice data and append it to Google Sheets automatically
 • Process multiple invoices in batch
 • Provide detailed reports and statistics
 
-🚀 **Ready to get started?**
-Select an option from the menu below:
+🚀 Select an option from the menu below:
 """
         
         # Check tenant registration
@@ -242,17 +320,15 @@ Select an option from the menu below:
                     await update.message.reply_text(welcome_message)
                     if tg_username:
                         await update.message.reply_text(
-                            "📝 **One-time registration**\n\n"
-                            "Please share your **email ID** to complete registration:",
-                            parse_mode='Markdown'
+                            "📝 One-time registration\n\n"
+                            "Please share your email ID to complete registration:"
                         )
                     else:
                         await update.message.reply_text(
-                            "📝 **One-time registration**\n\n"
-                            "Please share your **name** and **email ID** "
+                            "📝 One-time registration\n\n"
+                            "Please share your name and email ID "
                             "(separated by a comma) to complete registration.\n\n"
-                            "Example: `John Doe, john@example.com`",
-                            parse_mode='Markdown'
+                            "Example: John Doe, john@example.com"
                         )
                     return
         except Exception as e:
@@ -286,10 +362,14 @@ Select an option from the menu below:
         self._get_user_session(user_id)
         self.user_sessions[user_id]['state'] = 'uploading'
         
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+        ])
         await update.message.reply_text(
             "📸 Upload Invoice\n\n"
             "Send me your invoice images (one or multiple pages).\n"
-            "When done, type /done to process."
+            "Tap Process Invoice when you've sent all pages.",
+            reply_markup=keyboard
         )
     
     async def generate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -404,55 +484,98 @@ Select an option from the menu below:
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         help_message = """
-📚 **GST Scanner Bot Help**
+📚 GST SCANNER BOT HELP
 
-**Processing GST Invoices:**
+📄 PROCESSING GST INVOICES
 • Send invoice images one by one
 • For multi-page invoices, send all pages in sequence
-• Type /done after sending all pages
+• Tap ✅ Process Invoice after sending all pages
 • Supported formats: JPG, JPEG, PNG
 • Maximum {max_images} images per invoice
 
-**Processing Handwritten Orders:**
-• Type /order_upload to start
+📦 PROCESSING HANDWRITTEN ORDERS
+• Tap 📦 Upload Order or type /order_upload
 • Send order note photos (can be multiple pages)
-• Type /order_submit when done
+• Tap ✅ Submit Order when done
 • Bot will extract items, match prices, and generate PDF
 
-**Commands:**
-• /start - Welcome message & main menu
-• /upload - Upload GST invoice
-• /done - Process uploaded invoice
-• /order_upload - Start order upload session
-• /order_submit - Submit order for processing
-• /cancel - Cancel current operation
-• /help - Show this help
+⌨️ COMMANDS
+• /start — Welcome message & main menu
+• /upload — Upload GST invoice
+• /order_upload — Start order upload session
+• /cancel — Cancel current operation
+• /help — Show this help
 
-**What gets extracted (GST Invoice):**
+🔍 WHAT GETS EXTRACTED (GST INVOICE)
 • Invoice number and date
 • Seller and buyer details
 • GST numbers and state codes
 • Taxable amounts and GST totals
 • CGST, SGST, IGST breakup
 
-**What gets extracted (Order):**
+🔍 WHAT GETS EXTRACTED (ORDER)
 • Customer information
 • Line items (brand, part, color, quantity)
 • Automatic pricing match
 • Clean PDF invoice generation
 
-**Tips:**
-- Ensure images are clear and readable
-- All pages should be from the same order/invoice
-- Good lighting improves accuracy
-- Use /order_upload for handwritten orders
-- Use /upload for printed GST invoices
+💡 TIPS
+• Ensure images are clear and readable
+• All pages should be from the same order/invoice
+• Good lighting improves accuracy
+• Use 📦 Upload Order for handwritten orders
+• Use 📸 Upload Invoice for printed GST invoices
 
 Need assistance? Contact your administrator.
 """.format(max_images=config.MAX_IMAGES_PER_INVOICE)
         
         await update.message.reply_text(help_message)
     
+    # ═══════════════════════════════════════════════════════════════════
+    # Epic 3: /subscribe command -- subscription enrollment
+    # ═══════════════════════════════════════════════════════════════════
+    async def subscribe_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /subscribe -- show available subscription tiers"""
+        user_id = update.effective_user.id
+
+        self._ensure_tenant_manager()
+        if not self.tenant_manager:
+            await update.message.reply_text(
+                "Subscription service is currently unavailable. Please try again later."
+            )
+            return
+
+        tenant = self.tenant_manager.get_tenant(user_id)
+        if not tenant:
+            await update.message.reply_text(
+                "You need to register first. Send /start to get started."
+            )
+            return
+
+        current_plan = tenant.get('subscription_plan', config.DEFAULT_SUBSCRIPTION_TIER)
+
+        # Build inline keyboard with available tiers
+        buttons = []
+        for tier in config.SUBSCRIPTION_TIERS:
+            label = tier['name']
+            if tier['id'] == current_plan:
+                label = f"{tier['name']} (current)"
+            buttons.append([
+                InlineKeyboardButton(
+                    f"{label} -- {tier['description']}",
+                    callback_data=f"subscribe_{tier['id']}"
+                )
+            ])
+        buttons.append([InlineKeyboardButton("Back to Menu", callback_data="menu_main")])
+
+        await update.message.reply_text(
+            "Subscription Plans\n\n"
+            f"Your current plan: {current_plan.title()}\n\n"
+            "Select a plan:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    # ═══════════════════════════════════════════════════════════════════
+
     async def handle_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Handle inline keyboard button callbacks
@@ -481,10 +604,14 @@ Need assistance? Contact your administrator.
             self._get_user_session(user_id)
             self.user_sessions[user_id]['state'] = 'uploading'
             
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+            ])
             await query.edit_message_text(
                 "📸 Upload Invoice\n\n"
                 "Send me your invoice images (one or multiple pages).\n"
-                "When done, type /done to process."
+                "Tap Process Invoice when you've sent all pages.",
+                reply_markup=keyboard
             )
         
         elif callback_data == "menu_generate":
@@ -534,15 +661,18 @@ Need assistance? Contact your administrator.
             print(f"[DEBUG] Created order session for user {user_id}")
             print(f"[DEBUG] order_sessions now contains: {list(self.order_sessions.keys())}")
             
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+            ])
             await query.edit_message_text(
                 "📦 Upload Order (Handwritten Notes)\n\n"
                 "✅ Ready to receive order pages!\n\n"
-                "**Instructions:**\n"
+                "📌 INSTRUCTIONS\n"
                 "1. Send me photos of handwritten order notes\n"
                 "2. You can send multiple pages if the order spans multiple sheets\n"
-                "3. Type /order_submit when you've sent all pages\n\n"
-                "I'll extract the line items, match with pricing, and generate a clean PDF.\n\n"
-                "Type /cancel to abort."
+                "3. Tap ✅ Submit Order when you've sent all pages\n\n"
+                "I'll extract the line items, match with pricing, and generate a clean PDF.",
+                reply_markup=keyboard
             )
         # ═══════════════════════════════════════════════════════
         
@@ -552,13 +682,133 @@ Need assistance? Contact your administrator.
         elif callback_data in ("order_format_pdf", "order_format_csv"):
             output_format = "pdf" if callback_data == "order_format_pdf" else "csv"
             await query.edit_message_text(
-                f"📋 Format selected: **{output_format.upper()}**\n\nProcessing...",
-                parse_mode='Markdown'
+                f"📋 Format selected: {output_format.upper()}\n\nProcessing..."
             )
             # Process the order with the chosen format
             await self._process_order_with_format(update, user_id, output_format)
             return
         
+        # ═══════════════════════════════════════════════════════
+        # INLINE ACTION BUTTONS (Submit / Process / Cancel / Next)
+        # ═══════════════════════════════════════════════════════
+        elif callback_data == "btn_order_submit":
+            await query.edit_message_text("⏳ Submitting order...")
+            # Check for active order session
+            if config.FEATURE_ORDER_UPLOAD_NORMALIZATION and user_id in self.order_sessions:
+                order_session = self.order_sessions[user_id]
+                if not order_session.pages:
+                    await query.edit_message_text("❌ No pages uploaded yet. Send photos first.")
+                    return
+                # Ask user for output format
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📄 PDF", callback_data="order_format_pdf"),
+                        InlineKeyboardButton("📊 CSV", callback_data="order_format_csv"),
+                    ]
+                ])
+                await query.edit_message_text(
+                    f"📦 Ready to process your order!\n\n"
+                    f"📄 Pages: {len(order_session.pages)}\n\n"
+                    f"Choose output format:",
+                    reply_markup=keyboard
+                )
+            else:
+                await query.edit_message_text("❌ No active order session. Use /order_upload to start.")
+            return
+        
+        elif callback_data == "btn_done":
+            await query.edit_message_text("⏳ Processing invoice...")
+            # Trigger the done command logic
+            session = self._get_user_session(user_id)
+            if not session['images']:
+                await query.edit_message_text("❌ No images uploaded yet. Send photos first.")
+                return
+            # Delegate to done_command — create a fake text message context
+            await self.done_command(update, context)
+            return
+        
+        elif callback_data == "btn_cancel":
+            # Clear both order and invoice sessions
+            cancelled = False
+            if user_id in self.order_sessions:
+                del self.order_sessions[user_id]
+                cancelled = True
+            if user_id in self.user_sessions:
+                self._clear_user_session(user_id)
+                cancelled = True
+            if cancelled:
+                await query.edit_message_text(
+                    "✅ Cancelled!\n\n"
+                    "Send /start to begin again.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            else:
+                await query.edit_message_text(
+                    "Nothing to cancel.\n\n"
+                    "Send /start to begin.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            return
+        
+        elif callback_data == "btn_next":
+            # Batch mode: save current invoice and start next
+            session = self._get_user_session(user_id)
+            if session.get('images'):
+                if not session.get('batch'):
+                    session['batch'] = []
+                session['batch'].append(session['images'][:])
+                session['images'] = []
+                batch_num = len(session['batch']) + 1
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("⏭ Next Invoice", callback_data="btn_next"),
+                        InlineKeyboardButton("✅ Process All", callback_data="btn_done"),
+                    ],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                ])
+                await query.edit_message_text(
+                    f"✅ Invoice {len(session['batch'])} saved!\n\n"
+                    f"Now send pages for invoice #{batch_num}.\n"
+                    f"Tap Process All when done with all invoices.",
+                    reply_markup=keyboard
+                )
+            else:
+                await query.edit_message_text("⚠️ No pages to save. Send photos first.")
+            return
+        # ═══════════════════════════════════════════════════════
+        
+        # ═══════════════════════════════════════════════════════
+        # Epic 3: SUBSCRIPTION TIER SELECTION
+        # ═══════════════════════════════════════════════════════
+        elif callback_data.startswith("subscribe_"):
+            tier_id = callback_data[len("subscribe_"):]
+            self._ensure_tenant_manager()
+            if self.tenant_manager:
+                success = self.tenant_manager.update_subscription(user_id, tier_id)
+                if success:
+                    tier_name = tier_id.title()
+                    for tier in config.SUBSCRIPTION_TIERS:
+                        if tier['id'] == tier_id:
+                            tier_name = tier['name']
+                            break
+                    await query.edit_message_text(
+                        f"Subscription updated to: {tier_name}\n\n"
+                        "Choose an option:",
+                        reply_markup=self.create_main_menu_keyboard()
+                    )
+                else:
+                    await query.edit_message_text(
+                        "Failed to update subscription. Please try again.",
+                        reply_markup=self.create_main_menu_keyboard()
+                    )
+            else:
+                await query.edit_message_text(
+                    "Subscription service unavailable.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            return
+        # ═══════════════════════════════════════════════════════
+
         # ═══════════════════════════════════════════════════════
         # UPLOAD SUBMENU ACTIONS
         # ═══════════════════════════════════════════════════════
@@ -568,15 +818,18 @@ Need assistance? Contact your administrator.
             session['state'] = 'uploading'
             session['images'] = []
             
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+            ])
             await query.edit_message_text(
                 "📷 Single Invoice Upload Mode\n\n"
                 "✅ Ready to receive photos!\n\n"
-                "**Instructions:**\n"
+                "📌 INSTRUCTIONS\n"
                 "1. Send me one or more images of your invoice\n"
                 "2. For multi-page invoices, send all pages\n"
-                "3. Type /done when you've sent all pages\n\n"
-                "I'll extract the data and save it to Google Sheets.\n\n"
-                "Type /cancel to abort."
+                "3. Tap ✅ Process Invoice when you've sent all pages\n\n"
+                "I'll extract the data and save it to Google Sheets.",
+                reply_markup=keyboard
             )
         
         elif callback_data == "upload_batch":
@@ -585,19 +838,29 @@ Need assistance? Contact your administrator.
             session['images'] = []
             session['batch'] = []
             
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⏭ Next Invoice", callback_data="btn_next"),
+                    InlineKeyboardButton("✅ Process All", callback_data="btn_done"),
+                ],
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+            ])
             await query.edit_message_text(
                 "📦 Batch Upload Mode\n\n"
                 "✅ Ready for multiple invoices!\n\n"
-                "**Instructions:**\n"
+                "📌 INSTRUCTIONS\n"
                 "1. Upload all pages of first invoice\n"
-                "2. Type /next to save and start next invoice\n"
+                "2. Tap ⏭ Next Invoice to save and start next\n"
                 "3. Repeat for all invoices\n"
-                "4. Type /done to process entire batch\n\n"
-                "This is perfect for processing multiple invoices at once.\n\n"
-                "Type /cancel to abort."
+                "4. Tap ✅ Process All to process entire batch\n\n"
+                "This is perfect for processing multiple invoices at once.",
+                reply_markup=keyboard
             )
         
         elif callback_data == "upload_document":
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+            ])
             await query.edit_message_text(
                 "📎 Upload from Document\n\n"
                 "You can send invoices as:\n"
@@ -605,8 +868,8 @@ Need assistance? Contact your administrator.
                 "• Documents (right now)\n"
                 "• PDF files (coming soon!)\n\n"
                 "Just send your file and I'll process it.\n"
-                "Type /done when finished.\n\n"
-                "Type /cancel to abort."
+                "Tap Process Invoice when finished.",
+                reply_markup=keyboard
             )
         
         # ═══════════════════════════════════════════════════════
@@ -614,33 +877,58 @@ Need assistance? Contact your administrator.
         # ═══════════════════════════════════════════════════════
         
         elif callback_data == "gen_gstr1":
-            # Call existing tier3 handler
-            await query.message.reply_text(
-                "📄 Starting GSTR-1 Export...\n"
-                "This will be interactive."
+            session = self._get_user_session(user_id)
+            session['export_command'] = 'gstr1'
+            session['export_step'] = 'month'
+            await query.edit_message_text(
+                "📄 GSTR-1 Export\n\n"
+                "Enter the month (1-12):"
             )
-            # Convert callback query to regular update for tier3 handler
-            await self.tier3_handlers.export_gstr1_command(update, context)
         
         elif callback_data == "gen_gstr3b":
-            # Call existing tier3 handler
-            await query.message.reply_text(
-                "📋 Starting GSTR-3B Summary...\n"
-                "This will be interactive."
+            session = self._get_user_session(user_id)
+            session['export_command'] = 'gstr3b'
+            session['export_step'] = 'month'
+            await query.edit_message_text(
+                "📋 GSTR-3B Summary\n\n"
+                "Enter the month (1-12):"
             )
-            await self.tier3_handlers.export_gstr3b_command(update, context)
         
         elif callback_data == "gen_reports":
-            # Call existing tier3 handler
-            await query.message.reply_text(
-                "📊 Starting Operational Reports...\n"
-                "This will be interactive."
+            session = self._get_user_session(user_id)
+            session['export_command'] = 'reports'
+            session['export_step'] = 'type'
+            await query.edit_message_text(
+                "📈 Operational Reports\n\n"
+                "Select report type:\n"
+                "1️⃣ Processing Statistics\n"
+                "2️⃣ GST Summary (monthly)\n"
+                "3️⃣ Duplicate Attempts\n"
+                "4️⃣ Correction Analysis\n"
+                "5️⃣ Comprehensive Report\n\n"
+                "Reply with number (1-5):"
             )
-            await self.tier3_handlers.reports_command(update, context)
         
         elif callback_data == "gen_stats":
-            # Call existing tier3 handler directly
-            await self.tier3_handlers.stats_command(update, context)
+            await query.edit_message_text("📊 Generating statistics...")
+            try:
+                result = self.tier3_handlers.reporter.generate_processing_stats()
+                if result['success']:
+                    message = "📊 PROCESSING STATISTICS\n\n"
+                    message += f"Total Invoices: {result['total_invoices']}\n\n"
+                    message += "VALIDATION STATUS\n"
+                    for status, count in result['status_breakdown'].items():
+                        pct = result['status_percentages'].get(status, 0)
+                        message += f"  {status}: {count} ({pct:.1f}%)\n"
+                    if result['top_errors']:
+                        message += "\n⚠️ TOP ERRORS\n"
+                        for error in result['top_errors'][:3]:
+                            message += f"  • {error['type']}: {error['count']}\n"
+                    await query.message.reply_text(message)
+                else:
+                    await query.message.reply_text(f"❌ {result['message']}")
+            except Exception as e:
+                await query.message.reply_text(f"❌ Error: {str(e)}")
         
         # ═══════════════════════════════════════════════════════
         # HELP SUBMENU ACTIONS
@@ -885,9 +1173,21 @@ Useful Commands:
         # ═══════════════════════════════════════════════════════
         
         elif callback_data == "stats_quick":
-            # Show quick stats inline
-            await query.message.reply_text("📊 Generating quick statistics...")
-            await self.tier3_handlers.stats_command(update, context)
+            await query.edit_message_text("📊 Generating quick statistics...")
+            try:
+                result = self.tier3_handlers.reporter.generate_processing_stats()
+                if result['success']:
+                    message = "📊 QUICK STATISTICS\n\n"
+                    message += f"Total Invoices: {result['total_invoices']}\n\n"
+                    message += "VALIDATION STATUS\n"
+                    for status, count in result['status_breakdown'].items():
+                        pct = result['status_percentages'].get(status, 0)
+                        message += f"  {status}: {count} ({pct:.1f}%)\n"
+                    await query.message.reply_text(message)
+                else:
+                    await query.message.reply_text(f"❌ {result['message']}")
+            except Exception as e:
+                await query.message.reply_text(f"❌ Error: {str(e)}")
         
         elif callback_data == "stats_detailed":
             session = self._get_user_session(user_id)
@@ -1082,7 +1382,8 @@ Use /reports for detailed analysis"""
                 duplicate_status = 'UNIQUE'
             
             # Save to sheets with full audit trail
-            self._ensure_sheets_manager()  # Lazy init
+            tenant_sheet_id = self._get_tenant_sheet_id(user_id)
+            self._ensure_sheets_manager(sheet_id=tenant_sheet_id)  # Lazy init (tenant-aware)
             if config.ENABLE_AUDIT_LOGGING:
                 self.sheets_manager.append_invoice_with_audit(
                     invoice_data=header_row,
@@ -1455,14 +1756,10 @@ Use /reports for detailed analysis"""
         user_id = update.effective_user.id
         
         # ═══════════════════════════════════════════════════════════════════
-        # Epic 2: Check if user has active order session (redirect to order_submit)
+        # Epic 2: If user has active order session, treat /done as /order_submit
         # ═══════════════════════════════════════════════════════════════════
         if config.FEATURE_ORDER_UPLOAD_NORMALIZATION and user_id in self.order_sessions:
-            # User meant to submit order, not invoice
-            await update.message.reply_text(
-                "ℹ️ You're in order upload mode!\n\n"
-                "Please use /order_submit to process your order pages."
-            )
+            await self.order_submit_command(update, context)
             return
         # ═══════════════════════════════════════════════════════════════════
         
@@ -1587,7 +1884,8 @@ Use /reports for detailed analysis"""
                 fingerprint = self.dedup_manager.generate_fingerprint(invoice_data)
                 session['fingerprint'] = fingerprint
                 
-                self._ensure_sheets_manager()  # Lazy init
+                tenant_sheet_id = self._get_tenant_sheet_id(user_id)
+                self._ensure_sheets_manager(sheet_id=tenant_sheet_id)  # Lazy init (tenant-aware)
                 is_duplicate, existing_invoice = self.sheets_manager.check_duplicate_advanced(fingerprint)
                 
                 if is_duplicate:
@@ -1643,16 +1941,18 @@ Please try again or contact support if the issue persists.
         order_session = OrderSession(user_id, update.effective_user.username)
         self.order_sessions[user_id] = order_session
         
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+        ])
         await update.message.reply_text(
-            "📦 *Order Upload Mode Activated!*\n\n"
+            "📦 Order Upload Mode Activated!\n\n"
             "✅ Ready to receive order pages!\n\n"
-            "*Instructions:*\n"
+            "📌 INSTRUCTIONS\n"
             "1. Send me photos of handwritten order notes\n"
             "2. You can send multiple pages if needed\n"
-            "3. Type /order\\_submit when done\n\n"
-            "I'll extract items, match pricing, and generate a PDF.\n\n"
-            "Type /cancel to abort.",
-            parse_mode='Markdown'
+            "3. Tap ✅ Submit Order when you've sent all pages\n\n"
+            "I'll extract items, match pricing, and generate a PDF.",
+            reply_markup=keyboard
         )
     
     async def order_submit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1666,14 +1966,13 @@ Please try again or contact support if the issue persists.
         # Check if user has an active order session
         if user_id not in self.order_sessions:
             await update.message.reply_text(
-                "❌ **No Active Order Session**\n\n"
+                "❌ No Active Order Session\n\n"
                 "You need to start an order upload session first!\n\n"
-                "**How to upload an order:**\n"
+                "📌 HOW TO UPLOAD AN ORDER\n"
                 "1. Type /order_upload (or click 📦 Upload Order)\n"
                 "2. Send your order photos\n"
-                "3. Type /order_submit\n\n"
-                "_Note: Regular invoice upload (/upload) is different from order upload._",
-                parse_mode='Markdown'
+                "3. Tap ✅ Submit Order\n\n"
+                "Note: Regular invoice upload (/upload) is different from order upload."
             )
             return
         
@@ -1726,15 +2025,23 @@ Please try again or contact support if the issue persists.
             f"Processing your order... This may take a moment."
         )
         
-        # Lazy initialize orchestrator on first use
-        if self.order_orchestrator is None:
-            from order_normalization import OrderNormalizationOrchestrator
-            self.order_orchestrator = OrderNormalizationOrchestrator()
-            print("[OK] Epic 2: Order orchestrator initialized (lazy)")
+        # Epic 3: tenant-aware orchestrator initialisation
+        tenant_sheet_id = self._get_tenant_sheet_id(user_id)
+        from order_normalization import OrderNormalizationOrchestrator
+        if tenant_sheet_id and config.FEATURE_TENANT_SHEET_ISOLATION:
+            # Per-tenant: create an orchestrator targeting the tenant sheet
+            order_orchestrator = OrderNormalizationOrchestrator(sheet_id=tenant_sheet_id)
+            print(f"[OK] Epic 3: Tenant order orchestrator for sheet {tenant_sheet_id[:12]}...")
+        else:
+            # Shared: lazy-init a single shared orchestrator
+            if self.order_orchestrator is None:
+                self.order_orchestrator = OrderNormalizationOrchestrator()
+                print("[OK] Epic 2: Order orchestrator initialized (lazy)")
+            order_orchestrator = self.order_orchestrator
         
         # Process the order asynchronously
         try:
-            await self.order_orchestrator.process_order(order_session, update, output_format=output_format)
+            await order_orchestrator.process_order(order_session, update, output_format=output_format)
             
             # ── Tenant: increment order counter ───────────────
             self._ensure_tenant_manager()
@@ -1771,9 +2078,16 @@ Please try again or contact support if the issue persists.
         
         # Check max images
         if len(order_session.pages) >= config.MAX_IMAGES_PER_ORDER:
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                ]
+            ])
             await update.message.reply_text(
                 f"⚠️ Maximum {config.MAX_IMAGES_PER_ORDER} pages per order.\n"
-                f"Type /order_submit to process or /cancel to start over."
+                f"Tap Submit Order or Cancel.",
+                reply_markup=keyboard
             )
             return
         
@@ -1792,9 +2106,16 @@ Please try again or contact support if the issue persists.
             # Add page to order session
             page_number = order_session.add_page(filepath)
             
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                ]
+            ])
             await update.message.reply_text(
                 f"✅ Page {page_number} received!\n\n"
-                f"Send more pages or type /order_submit to process."
+                f"Send more pages or tap Submit Order to process.",
+                reply_markup=keyboard
             )
             
         except Exception as e:
@@ -1815,9 +2136,16 @@ Please try again or contact support if the issue persists.
         
         # Check max images
         if len(order_session.pages) >= config.MAX_IMAGES_PER_ORDER:
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                ]
+            ])
             await update.message.reply_text(
                 f"⚠️ Maximum {config.MAX_IMAGES_PER_ORDER} pages per order.\n"
-                f"Type /order_submit to process or /cancel to start over."
+                f"Tap Submit Order or Cancel.",
+                reply_markup=keyboard
             )
             return
         
@@ -1837,9 +2165,16 @@ Please try again or contact support if the issue persists.
             # Add page to order session
             page_number = order_session.add_page(filepath)
             
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                ]
+            ])
             await update.message.reply_text(
                 f"✅ Page {page_number} received!\n\n"
-                f"Send more pages or type /order_submit to process."
+                f"Send more pages or tap Submit Order to process.",
+                reply_markup=keyboard
             )
             
         except Exception as e:
@@ -1855,20 +2190,18 @@ Please try again or contact support if the issue persists.
         """Handle incoming photo messages"""
         user_id = update.effective_user.id
         
-        # Check if user has an active INVOICE session first (takes priority)
-        invoice_session = self._get_user_session(user_id)
-        user_in_invoice_flow = invoice_session['state'] in ['uploading', 'reviewing', 'correcting', 'confirming_duplicate']
-        
         # ═══════════════════════════════════════════════════════════════════
         # Epic 2: Check if this is an order photo (Feature-Flagged)
-        # Only route to order handler if user is NOT in the invoice flow
+        # Order session takes priority — check BEFORE creating invoice session
         # ═══════════════════════════════════════════════════════════════════
         if (config.FEATURE_ORDER_UPLOAD_NORMALIZATION 
-                and user_id in self.order_sessions 
-                and not user_in_invoice_flow):
+                and user_id in self.order_sessions):
             await self.handle_order_photo(update, context)
             return
         # ═══════════════════════════════════════════════════════════════════
+        
+        # No order session — proceed with invoice flow
+        invoice_session = self._get_user_session(user_id)
         
         session = invoice_session
         
@@ -1880,9 +2213,16 @@ Please try again or contact support if the issue persists.
             return
         
         if len(session['images']) >= config.MAX_IMAGES_PER_INVOICE:
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Process Invoice", callback_data="btn_done"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                ]
+            ])
             await update.message.reply_text(
                 f"⚠️ Maximum {config.MAX_IMAGES_PER_INVOICE} images per invoice.\n"
-                f"Type /done to process or /cancel to start over."
+                f"Tap Process Invoice or Cancel.",
+                reply_markup=keyboard
             )
             return
         
@@ -1906,9 +2246,16 @@ Please try again or contact support if the issue persists.
                 
                 page_count = len(session['images'])
                 
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Process Invoice", callback_data="btn_done"),
+                        InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                    ]
+                ])
                 await update.message.reply_text(
                     f"✅ Page {page_count} received!\n\n"
-                    f"Send more pages or type /done to process."
+                    f"Send more pages or tap Process Invoice.",
+                    reply_markup=keyboard
                 )
                 return  # Success - exit retry loop
                 
@@ -1940,17 +2287,12 @@ Please try again or contact support if the issue persists.
         """Handle document messages - accept images sent as files"""
         user_id = update.effective_user.id
         
-        # Check if user has an active INVOICE session first (takes priority)
-        invoice_session = self._get_user_session(user_id)
-        user_in_invoice_flow = invoice_session['state'] in ['uploading', 'reviewing', 'correcting', 'confirming_duplicate']
-        
         # ═══════════════════════════════════════════════════════════════════
         # Epic 2: Check if user is in order upload mode (Feature-Flagged)
-        # Only route to order handler if user is NOT in the invoice flow
+        # Order session takes priority — check BEFORE creating invoice session
         # ═══════════════════════════════════════════════════════════════════
         if (config.FEATURE_ORDER_UPLOAD_NORMALIZATION 
-                and user_id in self.order_sessions 
-                and not user_in_invoice_flow):
+                and user_id in self.order_sessions):
             document = update.message.document
             mime_type = document.mime_type or ''
             file_name = document.file_name or ''
@@ -1968,13 +2310,13 @@ Please try again or contact support if the issue persists.
                 await update.message.reply_text(
                     "📦 You're in order upload mode.\n\n"
                     "Please send images (JPG/PNG) of your handwritten order.\n"
-                    "Type /order\\_submit when done or /cancel to abort.",
-                    parse_mode='Markdown'
+                    "Tap ✅ Submit Order when done or ❌ Cancel to abort."
                 )
                 return
         # ═══════════════════════════════════════════════════════════════════
         
-        session = invoice_session
+        # No order session — proceed with invoice flow
+        session = self._get_user_session(user_id)
         
         if session['state'] not in ['uploading', 'reviewing', 'correcting', 'confirming_duplicate']:
             await update.message.reply_text(
@@ -2013,9 +2355,16 @@ Please try again or contact support if the issue persists.
                     
                     page_count = len(session['images'])
                     
+                    keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("✅ Process Invoice", callback_data="btn_done"),
+                            InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                        ]
+                    ])
                     await update.message.reply_text(
                         f"✅ Page {page_count} received!\n\n"
-                        f"Send more pages or type /done to process."
+                        f"Send more pages or tap Process Invoice.",
+                        reply_markup=keyboard
                     )
                     return  # Success - exit retry loop
                     
@@ -2086,10 +2435,9 @@ Please try again or contact support if the issue persists.
                         username = name_part  # Use provided name as username too
                 else:
                     await update.message.reply_text(
-                        "⚠️ Invalid format. Please enter your **name** and **email** "
+                        "⚠️ Invalid format. Please enter your name and email "
                         "separated by a comma.\n\n"
-                        "Example: `John Doe, john@example.com`",
-                        parse_mode='Markdown'
+                        "Example: John Doe, john@example.com"
                     )
                     return
             else:
@@ -2214,6 +2562,13 @@ Please try again or contact support if the issue persists.
             application.add_handler(CommandHandler("order_upload", self.order_upload_command))
             application.add_handler(CommandHandler("order_submit", self.order_submit_command))
             print("[OK] Epic 2: Order upload commands registered")
+        # ═══════════════════════════════════════════════════════
+        
+        # ═══════════════════════════════════════════════════════
+        # Epic 3: Subscription command
+        # ═══════════════════════════════════════════════════════
+        application.add_handler(CommandHandler("subscribe", self.subscribe_command))
+        print("[OK] Epic 3: Subscribe command registered")
         # ═══════════════════════════════════════════════════════
         
         # Add callback query handler for inline buttons

@@ -33,6 +33,23 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                 self._serve_dashboard()
             elif self.path.startswith('/logs'):
                 self._serve_logs()
+            # ═══════════════════════════════════════════════════════
+            # NEW: Usage tracking endpoints
+            # ═══════════════════════════════════════════════════════
+            elif self.path == '/usage/customer':
+                self._serve_usage_customer()
+            elif self.path == '/usage/invoices':
+                self._serve_usage_invoices()
+            elif self.path == '/usage/ocr-calls':
+                self._serve_usage_ocr_calls()
+            elif self.path.startswith('/usage/invoice/'):
+                invoice_id = self.path.split('/')[-1]
+                self._serve_usage_invoice_detail(invoice_id)
+            elif self.path == '/usage/orders':
+                self._serve_usage_orders()
+            elif self.path == '/usage/order-summary':
+                self._serve_usage_order_summary()
+            # ═══════════════════════════════════════════════════════
             elif self.path == '/':
                 self._serve_index()
             else:
@@ -183,6 +200,123 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             
         except Exception as e:
             self._send_response(500, {'error': f'Failed to read logs: {str(e)}'})
+    
+    # ═══════════════════════════════════════════════════════
+    # NEW: Usage Tracking Endpoints
+    # ═══════════════════════════════════════════════════════
+    
+    def _serve_usage_customer(self):
+        """Serve customer usage summary"""
+        try:
+            summary_file = Path('logs/customer_usage_summary.json')
+            if summary_file.exists():
+                with open(summary_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self._send_response(200, data)
+            else:
+                self._send_response(404, {'error': 'No customer data yet', 'hint': 'Process an invoice first'})
+        except Exception as e:
+            self._send_response(500, {'error': str(e)})
+    
+    def _serve_usage_invoices(self):
+        """Serve recent invoice usage records"""
+        try:
+            usage_file = Path('logs/invoice_usage.jsonl')
+            if not usage_file.exists():
+                self._send_response(200, {'invoices': [], 'count': 0})
+                return
+            
+            # Read last 20 invoices
+            with open(usage_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            invoices = []
+            for line in lines[-20:]:
+                try:
+                    invoices.append(json.loads(line))
+                except:
+                    continue
+            
+            # Reverse to show most recent first
+            invoices.reverse()
+            
+            self._send_response(200, {'invoices': invoices, 'count': len(invoices)})
+        except Exception as e:
+            self._send_response(500, {'error': str(e)})
+    
+    def _serve_usage_ocr_calls(self):
+        """Serve recent OCR call records"""
+        try:
+            ocr_file = Path('logs/ocr_calls.jsonl')
+            if not ocr_file.exists():
+                self._send_response(200, {'ocr_calls': [], 'count': 0})
+                return
+            
+            # Read last 50 OCR calls
+            with open(ocr_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            ocr_calls = []
+            for line in lines[-50:]:
+                try:
+                    ocr_calls.append(json.loads(line))
+                except:
+                    continue
+            
+            # Reverse to show most recent first
+            ocr_calls.reverse()
+            
+            self._send_response(200, {'ocr_calls': ocr_calls, 'count': len(ocr_calls)})
+        except Exception as e:
+            self._send_response(500, {'error': str(e)})
+    
+    def _serve_usage_invoice_detail(self, invoice_id: str):
+        """Serve detailed usage for a specific invoice"""
+        try:
+            usage_file = Path('logs/invoice_usage.jsonl')
+            if not usage_file.exists():
+                self._send_response(404, {'error': 'No invoice data yet'})
+                return
+            
+            # Search for invoice
+            with open(usage_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        record = json.loads(line)
+                        if record.get('invoice_id') == invoice_id:
+                            self._send_response(200, record)
+                            return
+                    except:
+                        continue
+            
+            self._send_response(404, {'error': f'Invoice {invoice_id} not found'})
+        except Exception as e:
+            self._send_response(500, {'error': str(e)})
+    
+    def _serve_usage_orders(self):
+        """Serve recent order usage records"""
+        try:
+            from utils.usage_tracker import get_usage_tracker
+            tracker = get_usage_tracker()
+            records = tracker.get_order_usage_records(limit=20)
+            self._send_response(200, {'orders': records, 'count': len(records)})
+        except Exception as e:
+            self._send_response(500, {'error': str(e)})
+    
+    def _serve_usage_order_summary(self):
+        """Serve aggregated order summary stats"""
+        try:
+            from utils.usage_tracker import get_usage_tracker
+            tracker = get_usage_tracker()
+            summary = tracker.get_order_summary()
+            if summary:
+                self._send_response(200, summary)
+            else:
+                self._send_response(200, {'total_orders': 0, 'hint': 'No orders tracked yet'})
+        except Exception as e:
+            self._send_response(500, {'error': str(e)})
+    
+    # ═══════════════════════════════════════════════════════
     
     def _serve_index(self):
         """Serve index page with available endpoints"""
