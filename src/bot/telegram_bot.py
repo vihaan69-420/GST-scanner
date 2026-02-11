@@ -1326,8 +1326,9 @@ Use /reports for detailed analysis"""
         is_duplicate_override: bool = False
     ):
         """Save invoice data to Google Sheets with Tier 2 audit trail"""
+        msg = update.effective_message
         try:
-            await update.message.reply_text("📊 Step 4/4: Updating Google Sheets...")
+            await msg.reply_text("📊 Step 4/4: Updating Google Sheets...")
             
             invoice_data = session['data']['invoice_data']
             line_items_data = session['data']['line_items_data']
@@ -1425,7 +1426,7 @@ Use /reports for detailed analysis"""
             # ═══════════════════════════════════════════════════════
             # CRITICAL: Send success to user IMMEDIATELY (Phase 3)
             # ═══════════════════════════════════════════════════════
-            await update.message.reply_text(success_message)  # No Markdown - plain text only
+            await msg.reply_text(success_message)  # No Markdown - plain text only
             # User now has confirmation - invoice processing COMPLETE
             # ═══════════════════════════════════════════════════════
             
@@ -1754,6 +1755,8 @@ Use /reports for detailed analysis"""
     async def done_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /done command - process all collected images"""
         user_id = update.effective_user.id
+        # Use effective_message so this works from both /done command and btn_done callback
+        msg = update.effective_message
         
         # ═══════════════════════════════════════════════════════════════════
         # Epic 2: If user has active order session, treat /done as /order_submit
@@ -1766,7 +1769,7 @@ Use /reports for detailed analysis"""
         session = self._get_user_session(user_id)
         
         if not session['images'] and not session.get('batch'):
-            await update.message.reply_text(
+            await msg.reply_text(
                 "❌ No images to process!\n"
                 "Send invoice images first, then type /done"
             )
@@ -1780,7 +1783,7 @@ Use /reports for detailed analysis"""
         
         # Single invoice processing
         if not session['images']:
-            await update.message.reply_text(
+            await msg.reply_text(
                 "❌ No images to process!\n"
                 "Send invoice images first, then type /done"
             )
@@ -1789,17 +1792,17 @@ Use /reports for detailed analysis"""
         image_paths = session['images']
         session['start_time'] = datetime.now()
         
-        await update.message.reply_text(
+        await msg.reply_text(
             f"⏳ Processing {len(image_paths)} page(s)...\n"
             "This may take a moment. Please wait."
         )
         
         try:
             # Step 1: OCR - Extract text from all images
-            await update.message.reply_text("📄 Step 1/4: Extracting text from images...")
+            await msg.reply_text("📄 Step 1/4: Extracting text from images...")
             ocr_start_time = datetime.now()
             
-            ocr_result = self.ocr_engine.extract_text_from_images(image_paths)
+            ocr_result = await asyncio.to_thread(self.ocr_engine.extract_text_from_images, image_paths)
             
             # Handle both old (str) and new (dict) return types for backward compatibility
             if isinstance(ocr_result, dict):
@@ -1820,10 +1823,10 @@ Use /reports for detailed analysis"""
             session['ocr_text'] = ocr_text
             
             # Step 2: Parse GST data with Tier 1 (line items + validation)
-            await update.message.reply_text("🔍 Step 2/4: Parsing invoice and line items...")
+            await msg.reply_text("🔍 Step 2/4: Parsing invoice and line items...")
             parsing_start_time = datetime.now()
             
-            result = self.gst_parser.parse_invoice_with_validation(ocr_text)
+            result = await asyncio.to_thread(self.gst_parser.parse_invoice_with_validation, ocr_text)
             
             parsing_time_seconds = (datetime.now() - parsing_start_time).total_seconds()
             
@@ -1876,7 +1879,7 @@ Use /reports for detailed analysis"""
                         validation_result,
                         config.CONFIDENCE_THRESHOLD_REVIEW
                     )
-                    await update.message.reply_text(review_msg)
+                    await msg.reply_text(review_msg)
                     return
             
             # Step 5: Tier 2 - Deduplication Check (warn-only mode)
@@ -1898,13 +1901,13 @@ Use /reports for detailed analysis"""
                         invoice_data,
                         existing_invoice
                     )
-                    await update.message.reply_text(warning_msg)
+                    await msg.reply_text(warning_msg)
                     
                     # Log the duplicate attempt
                     print(f"[DUPLICATE] Invoice {invoice_data.get('Invoice_No', 'unknown')} detected as duplicate but saving anyway (warn-only mode)")
             
             # No review needed - proceed to save (even if duplicate)
-            await update.message.reply_text("✅ Step 3/4: Validation complete...")
+            await msg.reply_text("✅ Step 3/4: Validation complete...")
             await self._save_invoice_to_sheets(update, user_id, session)
             
         except Exception as e:
@@ -1915,7 +1918,7 @@ Error: {str(e)}
 
 Please try again or contact support if the issue persists.
 """
-            await update.message.reply_text(error_message)
+            await msg.reply_text(error_message)
             print(f"Error processing invoice for user {user_id}: {str(e)}")
     
     # ═══════════════════════════════════════════════════════════════════

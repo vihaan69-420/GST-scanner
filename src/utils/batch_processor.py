@@ -127,7 +127,8 @@ class BatchProcessor:
         """
         try:
             # Step 1: OCR - Extract text from images
-            ocr_text = self.ocr_engine.extract_text_from_images(invoice_images)
+            ocr_result = self.ocr_engine.extract_text_from_images(invoice_images)
+            ocr_text = ocr_result['text'] if isinstance(ocr_result, dict) else ocr_result
             
             if not ocr_text:
                 return {

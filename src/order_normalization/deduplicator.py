@@ -57,7 +57,7 @@ class OrderDeduplicator:
             signature = self._generate_signature(line)
             
             # Generate line ID for tracking
-            line_id = f"P{line['page_number']}_S{line['serial_no_raw']}"
+            line_id = f"P{line.get('page_number', 0)}_S{line.get('serial_no_raw', 0)}"
             line['line_id'] = line_id
             
             if signature in seen_signatures:

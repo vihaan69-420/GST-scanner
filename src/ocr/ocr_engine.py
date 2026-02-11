@@ -145,7 +145,8 @@ if __name__ == "__main__":
     
     if os.path.exists(test_image):
         print("Testing OCR on sample invoice...")
-        text = ocr.extract_text_from_image(test_image)
+        result = ocr.extract_text_from_image(test_image)
+        text = result['text'] if isinstance(result, dict) else result
         print("\n" + "="*80)
         print("EXTRACTED TEXT:")
         print("="*80)

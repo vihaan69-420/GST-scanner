@@ -234,7 +234,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             for line in lines[-20:]:
                 try:
                     invoices.append(json.loads(line))
-                except:
+                except (json.JSONDecodeError, ValueError):
                     continue
             
             # Reverse to show most recent first
@@ -260,7 +260,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             for line in lines[-50:]:
                 try:
                     ocr_calls.append(json.loads(line))
-                except:
+                except (json.JSONDecodeError, ValueError):
                     continue
             
             # Reverse to show most recent first
@@ -286,7 +286,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                         if record.get('invoice_id') == invoice_id:
                             self._send_response(200, record)
                             return
-                    except:
+                    except (json.JSONDecodeError, ValueError):
                         continue
             
             self._send_response(404, {'error': f'Invoice {invoice_id} not found'})

@@ -194,7 +194,7 @@ class OrderNormalizationOrchestrator:
             except Exception as e:
                 # Sheet failure is non-critical if PDF exists
                 print(f"[WARNING] Google Sheets upload failed: {e}")
-                if pdf_path:
+                if output_path:
                     await update.effective_message.reply_text(
                         "⚠️ Order processed but couldn't save to Google Sheets.\n"
                         "PDF is attached below."
@@ -225,7 +225,7 @@ class OrderNormalizationOrchestrator:
                         self._track_order_complete_async(
                             order_session=order_session,
                             clean_invoice=clean_invoice,
-                            pdf_path=pdf_path
+                            pdf_path=output_path
                         )
                     )
                 except Exception as track_err:
