@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # dependencies
 /node_modules
 /.pnp
@@ -37,3 +38,28 @@ next-env.d.ts
 /data/*.db
 /data/*.db-wal
 /data/*.db-shm
+=======
+temp_invoices/
+exports/
+*.pyc
+__pycache__/
+.env
+credentials.json
+*.log
+.DS_Store
+.vscode/
+*.jpg
+*.png
+*.pdf
+*.xlsx
+
+# Temporary fix/debug scripts
+fix_sheet_*.py
+reset_invoice_header.py
+cleanup_sheet.py
+check_and_clear.py
+debug_*.py
+fix_headers*.py
+test_columns.py
+verify_headers.py
+>>>>>>> aea23172a90b0064e47cce006f3c83edeb4a5012

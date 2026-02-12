@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GST Scanner - Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f0f2f5;
+            color: #333;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+
+        /* ── Top Bar ── */
+        .top-bar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            color: white;
+        }
+        .top-bar h1 { font-size: 20px; font-weight: 600; }
+        .top-bar .refresh-info { font-size: 12px; opacity: 0.8; }
+
+        /* ── Tabs ── */
+        .tab-bar {
+            background: white;
+            display: flex;
+            border-bottom: 2px solid #e0e0e0;
+            margin-bottom: 16px;
+        }
+        .tab-button {
+            padding: 12px 24px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            color: #888;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab-button:hover { color: #667eea; background: #f8f8ff; }
+        .tab-button.active { color: #667eea; border-bottom-color: #667eea; background: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* ── User Profile Card ── */
+        .profile-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            padding: 20px 24px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .profile-avatar {
+            width: 56px; height: 56px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 24px; color: white; font-weight: 700;
+            flex-shrink: 0;
+        }
+        .profile-info { flex: 1; }
+        .profile-name { font-size: 20px; font-weight: 700; color: #333; }
+        .profile-meta { font-size: 13px; color: #888; margin-top: 2px; display: flex; gap: 16px; flex-wrap: wrap; }
+        .profile-meta span { display: flex; align-items: center; gap: 4px; }
+        .profile-status {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 13px; font-weight: 600;
+        }
+        .status-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        .status-healthy { background: #4CAF50; }
+        .status-degraded { background: #FF9800; }
+        .status-error { background: #F44336; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+        /* ── Stats Strip ── */
+        .stats-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .stat-box {
+            background: white;
+            border-radius: 8px;
+            padding: 14px 16px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 26px;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+        .stat-value.purple { color: #667eea; }
+        .stat-value.green { color: #4CAF50; }
+        .stat-value.orange { color: #FF9800; }
+        .stat-value.blue { color: #2196F3; }
+        .stat-value.pink { color: #764ba2; }
+        .stat-label {
+            font-size: 11px;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+            font-weight: 600;
+        }
+
+        /* ── Two-Column Layout ── */
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        @media (max-width: 900px) {
+            .two-col { grid-template-columns: 1fr; }
+        }
+
+        /* ── Section Card ── */
+        .section-card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 14px 18px;
+            font-size: 15px;
+            font-weight: 700;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .section-header .badge {
+            font-size: 12px;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 12px;
+            color: white;
+        }
+        .badge-purple { background: #667eea; }
+        .badge-pink { background: #764ba2; }
+
+        /* ── Inline Metrics Row ── */
+        .inline-metrics {
+            display: flex;
+            border-bottom: 1px solid #f5f5f5;
+        }
+        .inline-metric {
+            flex: 1;
+            text-align: center;
+            padding: 12px 8px;
+            border-right: 1px solid #f5f5f5;
+        }
+        .inline-metric:last-child { border-right: none; }
+        .inline-metric .val {
+            font-size: 18px;
+            font-weight: 700;
+            color: #333;
+        }
+        .inline-metric .lbl {
+            font-size: 10px;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-top: 2px;
+        }
+        .val.green { color: #4CAF50; }
+        .val.red { color: #F44336; }
+
+        /* ── Compact Table ── */
+        .compact-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .compact-table thead th {
+            padding: 8px 10px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #999;
+            font-weight: 700;
+            border-bottom: 2px solid #f0f0f0;
+            background: #fafafa;
+            white-space: nowrap;
+        }
+        .compact-table tbody td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #f8f8f8;
+            white-space: nowrap;
+        }
+        .compact-table tbody tr:hover { background: #f9f9ff; }
+        .compact-table .mono { font-family: 'Courier New', monospace; font-size: 11px; }
+        .compact-table .empty-row td {
+            text-align: center;
+            padding: 20px 10px;
+            color: #bbb;
+            font-style: italic;
+        }
+        .table-scroll {
+            max-height: 320px;
+            overflow-y: auto;
+            overflow-x: auto;
+        }
+
+        /* ── Status Pills ── */
+        .pill {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .pill-ok { background: #E8F5E9; color: #2E7D32; }
+        .pill-fail { background: #FFEBEE; color: #C62828; }
+        .pill-warn { background: #FFF3E0; color: #E65100; }
+
+        /* ── Cost Row (inline) ── */
+        .cost-row {
+            display: flex;
+            gap: 12px;
+            padding: 12px 18px;
+            border-top: 1px solid #f0f0f0;
+            font-size: 13px;
+        }
+        .cost-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .cost-item .dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .cost-item .cost-val { font-weight: 700; }
+
+        /* ── Log Viewer ── */
+        .log-controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .log-controls input, .log-controls select, .log-controls button {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .log-controls input { flex: 1; min-width: 180px; }
+        .log-controls button {
+            background: #667eea; color: white; border: none; cursor: pointer; font-weight: 600;
+        }
+        .log-controls button:hover { background: #5568d3; }
+        .log-viewer {
+            background: #1e1e1e; color: #d4d4d4;
+            padding: 12px; border-radius: 6px;
+            font-family: 'Courier New', monospace; font-size: 12px;
+            max-height: 550px; overflow-y: auto; line-height: 1.5;
+        }
+        .log-line { margin: 1px 0; padding: 2px 5px; border-radius: 3px; }
+        .log-line:hover { background: #2d2d2d; }
+        .log-line.INFO { color: #4EC9B0; }
+        .log-line.WARNING { color: #CE9178; }
+        .log-line.ERROR { color: #F48771; }
+        .log-line.CRITICAL { color: #F44336; }
+        .log-line.DEBUG { color: #9CDCFE; }
+        .log-stats { display: flex; gap: 16px; margin-bottom: 8px; font-size: 13px; color: #666; }
+        .log-stats span { background: #f5f5f5; padding: 4px 10px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <!-- Top Bar -->
+    <div class="top-bar">
+        <h1>GST Scanner Dashboard</h1>
+        <div class="refresh-info">Auto-refresh 10s | <span id="lastUpdate">--</span></div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tab-bar">
+        <button class="tab-button active" onclick="switchTab('usage')">Usage & Costs</button>
+        <button class="tab-button" onclick="switchTab('logs')">Logs</button>
+    </div>
+
+    <div class="container">
+        <!-- ═══════════════════════════════════════ -->
+        <!-- USAGE TAB -->
+        <!-- ═══════════════════════════════════════ -->
+        <div id="usage-tab" class="tab-content active">
+
+            <!-- User Profile -->
+            <div class="profile-card">
+                <div class="profile-avatar" id="profileAvatar">?</div>
+                <div class="profile-info">
+                    <div class="profile-name" id="profileName">Loading...</div>
+                    <div class="profile-meta">
+                        <span id="profileId">ID: --</span>
+                        <span id="profileSince">Since: --</span>
+                        <span id="profileLastActive">Last: --</span>
+                    </div>
+                </div>
+                <div class="profile-status">
+                    <div class="status-dot status-healthy" id="statusDot"></div>
+                    <span id="statusText">Online</span>
+                </div>
+            </div>
+
+            <!-- Overall Stats Strip -->
+            <div class="stats-strip">
+                <div class="stat-box">
+                    <div class="stat-value purple" id="statInvoices">0</div>
+                    <div class="stat-label">Invoices</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value pink" id="statOrders">0</div>
+                    <div class="stat-label">Orders</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value blue" id="statPages">0</div>
+                    <div class="stat-label">Pages</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value green" id="statTokens">0</div>
+                    <div class="stat-label">Tokens</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value orange" id="statTotalCost">$0.00</div>
+                    <div class="stat-label">API Cost</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-value pink" id="statOrderValue">&#8377;0</div>
+                    <div class="stat-label">Order Value</div>
+                </div>
+            </div>
+
+            <!-- Two-Column: Invoices | Orders -->
+            <div class="two-col">
+
+                <!-- LEFT: Invoice Scanning -->
+                <div class="section-card">
+                    <div class="section-header">
+                        Invoice Scanning
+                        <span class="badge badge-purple" id="invBadge">0</span>
+                    </div>
+                    <div class="inline-metrics">
+                        <div class="inline-metric">
+                            <div class="val" id="invPages">0</div>
+                            <div class="lbl">Pages</div>
+                        </div>
+                        <div class="inline-metric">
+                            <div class="val" id="invAvgCost">$0</div>
+                            <div class="lbl">Avg Cost</div>
+                        </div>
+                        <div class="inline-metric">
+                            <div class="val green" id="invSuccessRate">0%</div>
+                            <div class="lbl">Success</div>
+                        </div>
+                    </div>
+                    <div class="cost-row">
+                        <div class="cost-item">
+                            <div class="dot" style="background:#667eea"></div>
+                            <span>OCR</span>
+                            <span class="cost-val" id="costOcr">$0</span>
+                        </div>
+                        <div class="cost-item">
+                            <div class="dot" style="background:#764ba2"></div>
+                            <span>Parsing</span>
+                            <span class="cost-val" id="costParsing">$0</span>
+                        </div>
+                    </div>
+                    <div class="table-scroll">
+                        <table class="compact-table">
+                            <thead>
+                                <tr>
+                                    <th>Invoice</th>
+                                    <th>Pg</th>
+                                    <th>Tokens</th>
+                                    <th>Cost</th>
+                                    <th>Time</th>
+                                    <th>Status</th>
+                                    <th>When</th>
+                                </tr>
+                            </thead>
+                            <tbody id="invoiceTableBody">
+                                <tr class="empty-row"><td colspan="7">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- RIGHT: Order Uploads -->
+                <div class="section-card">
+                    <div class="section-header">
+                        Order Uploads
+                        <span class="badge badge-pink" id="ordBadge">0</span>
+                    </div>
+                    <div class="inline-metrics">
+                        <div class="inline-metric">
+                            <div class="val" id="ordItems">0</div>
+                            <div class="lbl">Items</div>
+                        </div>
+                        <div class="inline-metric">
+                            <div class="val" id="ordQty">0</div>
+                            <div class="lbl">Quantity</div>
+                        </div>
+                        <div class="inline-metric">
+                            <div class="val" id="ordMatchRate">0%</div>
+                            <div class="lbl">Match</div>
+                        </div>
+                        <div class="inline-metric">
+                            <div class="val" id="ordAvgTime">0s</div>
+                            <div class="lbl">Avg Time</div>
+                        </div>
+                    </div>
+                    <div class="table-scroll">
+                        <table class="compact-table">
+                            <thead>
+                                <tr>
+                                    <th>Order</th>
+                                    <th>Customer</th>
+                                    <th>Items</th>
+                                    <th>Qty</th>
+                                    <th>Value</th>
+                                    <th>Match</th>
+                                    <th>Status</th>
+                                    <th>When</th>
+                                </tr>
+                            </thead>
+                            <tbody id="orderTableBody">
+                                <tr class="empty-row"><td colspan="8">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════ -->
+        <!-- LOGS TAB -->
+        <!-- ═══════════════════════════════════════ -->
+        <div id="logs-tab" class="tab-content">
+            <div class="section-card" style="padding: 18px;">
+                <div class="log-controls">
+                    <input type="text" id="logSearch" placeholder="Search logs..." onkeyup="if(event.key==='Enter') loadLogs()">
+                    <select id="logLevel" onchange="loadLogs()">
+                        <option value="">All Levels</option>
+                        <option value="DEBUG">DEBUG</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                    </select>
+                    <select id="logLines" onchange="loadLogs()">
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                        <option value="200">200</option>
+                        <option value="500">500</option>
+                    </select>
+                    <button onclick="loadLogs()">Refresh</button>
+                    <button onclick="clearLogFilters()" style="background:#999">Clear</button>
+                </div>
+                <div class="log-stats">
+                    <span>Total: <strong id="totalLines">0</strong></span>
+                    <span>Filtered: <strong id="filteredLines">0</strong></span>
+                    <span>Showing: <strong id="returnedLines">0</strong></span>
+                </div>
+                <div class="log-viewer" id="logViewer">
+                    <div style="text-align:center;color:#888;">Loading logs...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentTab = 'usage';
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById(tabName + '-tab').classList.add('active');
+            currentTab = tabName;
+            if (tabName === 'logs') loadLogs();
+            else if (tabName === 'usage') loadUsageData();
+        }
+
+        function timeAgo(dateStr) {
+            if (!dateStr) return '--';
+            const d = new Date(dateStr);
+            const now = new Date();
+            const diffS = Math.floor((now - d) / 1000);
+            if (diffS < 60) return diffS + 's ago';
+            if (diffS < 3600) return Math.floor(diffS / 60) + 'm ago';
+            if (diffS < 86400) return Math.floor(diffS / 3600) + 'h ago';
+            return Math.floor(diffS / 86400) + 'd ago';
+        }
+
+        function shortDate(dateStr) {
+            if (!dateStr) return '--';
+            const d = new Date(dateStr);
+            return d.toLocaleDateString('en-IN', {day:'2-digit', month:'short'}) + ' ' + d.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
+        }
+
+        function statusPill(status) {
+            if (!status) return '<span class="pill pill-warn">--</span>';
+            const s = status.toLowerCase();
+            if (s === 'ok' || s === 'valid' || s === 'completed' || s === 'success')
+                return `<span class="pill pill-ok">${status}</span>`;
+            if (s === 'failed' || s === 'invalid' || s === 'error')
+                return `<span class="pill pill-fail">${status}</span>`;
+            return `<span class="pill pill-warn">${status}</span>`;
+        }
+
+        async function loadUsageData() {
+            try {
+                const [customerRes, invoicesRes, orderSummaryRes, ordersRes] = await Promise.all([
+                    fetch('/usage/customer'),
+                    fetch('/usage/invoices'),
+                    fetch('/usage/order-summary'),
+                    fetch('/usage/orders')
+                ]);
+
+                // ── Profile & Customer Summary ──
+                let customer = {};
+                let username = 'User';
+                let userId = '--';
+                let periodStart = null;
+                let lastUpdated = null;
+
+                if (customerRes.ok) {
+                    customer = await customerRes.json();
+                    username = customer.customer_name || 'User';
+                    userId = customer.customer_id || '--';
+                    periodStart = customer.period_start;
+                    lastUpdated = customer.last_updated;
+                }
+
+                // Try to get username from recent records
+                let invoices = { invoices: [] };
+                if (invoicesRes.ok) invoices = await invoicesRes.json();
+
+                let ordersData = { orders: [] };
+                if (ordersRes.ok) ordersData = await ordersRes.json();
+
+                // Pick best username from latest activity
+                const latestInv = (invoices.invoices && invoices.invoices[0]) || {};
+                const latestOrd = (ordersData.orders && ordersData.orders[0]) || {};
+                const tgUsername = latestInv.telegram_username || latestOrd.telegram_username || '';
+                const tgUserId = latestInv.telegram_user_id || latestOrd.telegram_user_id || '';
+                const displayName = tgUsername && tgUsername !== 'unknown' ? '@' + tgUsername : username;
+
+                // Most recent activity timestamp
+                const lastActivity = latestInv.timestamp || latestOrd.timestamp || lastUpdated;
+
+                // Update profile
+                document.getElementById('profileAvatar').textContent = (displayName.replace('@','')[0] || '?').toUpperCase();
+                document.getElementById('profileName').textContent = displayName;
+                document.getElementById('profileId').textContent = tgUserId ? 'ID: ' + tgUserId : 'ID: ' + userId;
+                document.getElementById('profileSince').textContent = periodStart ? 'Since: ' + new Date(periodStart).toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) : 'Since: --';
+                document.getElementById('profileLastActive').textContent = lastActivity ? 'Last: ' + timeAgo(lastActivity) : 'Last: --';
+
+                // ── Order Summary ──
+                let orderSummary = { total_orders: 0 };
+                if (orderSummaryRes.ok) orderSummary = await orderSummaryRes.json();
+
+                // ── Overall Stats Strip ──
+                const totalInv = customer.total_invoices || 0;
+                const totalOrd = orderSummary.total_orders || 0;
+
+                document.getElementById('statInvoices').textContent = totalInv;
+                document.getElementById('statOrders').textContent = totalOrd;
+                document.getElementById('statPages').textContent = customer.total_pages || 0;
+                document.getElementById('statTokens').textContent = (customer.total_tokens || 0).toLocaleString();
+                document.getElementById('statTotalCost').textContent = '$' + (customer.total_cost_usd || 0).toFixed(4);
+                const ordVal = orderSummary.total_subtotal || 0;
+                document.getElementById('statOrderValue').textContent = '\u20B9' + ordVal.toLocaleString('en-IN', {maximumFractionDigits: 0});
+
+                // ── Invoice Section ──
+                document.getElementById('invBadge').textContent = totalInv;
+                document.getElementById('invPages').textContent = customer.total_pages || 0;
+                document.getElementById('invAvgCost').textContent = '$' + (customer.avg_cost_per_invoice || 0).toFixed(5);
+                const successRate = customer.success_rate != null ? (customer.success_rate * 100).toFixed(0) + '%' : '--';
+                document.getElementById('invSuccessRate').textContent = successRate;
+                document.getElementById('costOcr').textContent = '$' + (customer.total_ocr_cost_usd || 0).toFixed(5);
+                document.getElementById('costParsing').textContent = '$' + (customer.total_parsing_cost_usd || 0).toFixed(5);
+
+                // Invoice table
+                const invTbody = document.getElementById('invoiceTableBody');
+                if (invoices.invoices && invoices.invoices.length > 0) {
+                    invTbody.innerHTML = invoices.invoices.map(inv => `
+                        <tr>
+                            <td class="mono">${inv.invoice_id || 'N/A'}</td>
+                            <td>${inv.page_count || 0}</td>
+                            <td>${(inv.total_tokens || 0).toLocaleString()}</td>
+                            <td style="font-weight:600;color:#667eea;">$${(inv.total_cost_usd || 0).toFixed(5)}</td>
+                            <td>${(inv.processing_time_seconds || 0).toFixed(1)}s</td>
+                            <td>${statusPill(inv.validation_status)}</td>
+                            <td style="color:#999;">${shortDate(inv.timestamp)}</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    invTbody.innerHTML = '<tr class="empty-row"><td colspan="7">No invoices yet</td></tr>';
+                }
+
+                // ── Order Section ──
+                document.getElementById('ordBadge').textContent = totalOrd;
+                document.getElementById('ordItems').textContent = orderSummary.total_items || 0;
+                document.getElementById('ordQty').textContent = (orderSummary.total_quantity || 0).toLocaleString();
+                document.getElementById('ordMatchRate').textContent = (orderSummary.overall_match_rate || 0) + '%';
+                document.getElementById('ordAvgTime').textContent = (orderSummary.avg_processing_seconds || 0).toFixed(1) + 's';
+
+                // Order table
+                const ordTbody = document.getElementById('orderTableBody');
+                if (ordersData.orders && ordersData.orders.length > 0) {
+                    ordTbody.innerHTML = ordersData.orders.map(ord => {
+                        const matchColor = ord.match_rate >= 80 ? 'green' : ord.match_rate >= 50 ? 'orange' : 'red';
+                        return `
+                            <tr>
+                                <td class="mono">${ord.order_id || 'N/A'}</td>
+                                <td>${ord.customer_name || '--'}</td>
+                                <td>${ord.total_items || 0}</td>
+                                <td>${ord.total_quantity || 0}</td>
+                                <td style="font-weight:600;color:#764ba2;">\u20B9${(ord.subtotal || 0).toLocaleString('en-IN', {maximumFractionDigits: 0})}</td>
+                                <td style="font-weight:600;color:${matchColor};">${ord.match_rate || 0}%</td>
+                                <td>${statusPill(ord.status)}</td>
+                                <td style="color:#999;">${shortDate(ord.timestamp)}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                } else {
+                    ordTbody.innerHTML = '<tr class="empty-row"><td colspan="8">No orders yet</td></tr>';
+                }
+
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+
+            } catch (error) {
+                console.error('Failed to load usage data:', error);
+            }
+        }
+
+        async function loadLogs() {
+            const search = document.getElementById('logSearch').value;
+            const level = document.getElementById('logLevel').value;
+            const lines = document.getElementById('logLines').value;
+            const params = new URLSearchParams();
+            if (search) params.append('search', search);
+            if (level) params.append('level', level);
+            params.append('lines', lines);
+            try {
+                const response = await fetch('/logs?' + params.toString());
+                const data = await response.json();
+                document.getElementById('totalLines').textContent = data.total_lines;
+                document.getElementById('filteredLines').textContent = data.filtered_lines;
+                document.getElementById('returnedLines').textContent = data.returned_lines;
+                const logViewer = document.getElementById('logViewer');
+                if (data.logs && data.logs.length > 0) {
+                    logViewer.innerHTML = data.logs.map(line => {
+                        let lvl = '';
+                        if (line.includes('[DEBUG]')) lvl = 'DEBUG';
+                        else if (line.includes('[INFO]')) lvl = 'INFO';
+                        else if (line.includes('[WARNING]')) lvl = 'WARNING';
+                        else if (line.includes('[ERROR]')) lvl = 'ERROR';
+                        else if (line.includes('[CRITICAL]')) lvl = 'CRITICAL';
+                        return `<div class="log-line ${lvl}">${escapeHtml(line)}</div>`;
+                    }).join('');
+                    logViewer.scrollTop = logViewer.scrollHeight;
+                } else {
+                    logViewer.innerHTML = '<div style="text-align:center;color:#888;">No logs found</div>';
+                }
+            } catch (error) {
+                console.error('Failed to load logs:', error);
+                document.getElementById('logViewer').innerHTML =
+                    '<div style="text-align:center;color:#F44336;">Failed to load logs: ' + error.message + '</div>';
+            }
+        }
+
+        function clearLogFilters() {
+            document.getElementById('logSearch').value = '';
+            document.getElementById('logLevel').value = '';
+            document.getElementById('logLines').value = '100';
+            loadLogs();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Init
+        loadUsageData();
+        setInterval(() => {
+            if (currentTab === 'usage') loadUsageData();
+        }, 10000);
+    </script>
+</body>
+</html>

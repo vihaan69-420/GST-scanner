@@ -1,0 +1,40 @@
+# Google Cloud Build ignore file
+# This overrides .gitignore for cloud builds
+
+# Ignore temp and output folders (at root level only)
+/temp_invoices/
+/temp/
+/logs/
+
+# Ignore credentials and secrets
+.env
+credentials.json
+config/credentials.json
+
+# Ignore compiled files
+*.pyc
+__pycache__/
+
+# Ignore IDE and system files
+.DS_Store
+.vscode/
+.git/
+
+# Ignore media files
+*.jpg
+*.png
+*.pdf
+*.xlsx
+
+# Ignore test/debug scripts
+fix_sheet_*.py
+reset_invoice_header.py
+cleanup_sheet.py
+check_and_clear.py
+debug_*.py
+fix_headers*.py
+test_columns.py
+verify_headers.py
+
+# DO NOT ignore src/exports - it contains Python code!
+# The /exports/ at root is for output files, not code
