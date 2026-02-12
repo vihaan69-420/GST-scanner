@@ -80,18 +80,22 @@ class CorrectionManager:
         # Build basic invoice details (no Markdown to avoid parsing issues)
         invoice_no = invoice_data.get('Invoice_No', 'N/A')
         invoice_date = invoice_data.get('Invoice_Date', 'N/A')
+        seller_name = invoice_data.get('Seller_Name', 'N/A')
         buyer_name = invoice_data.get('Buyer_Name', 'N/A')
         buyer_gstin = invoice_data.get('Buyer_GSTIN', 'N/A')
         total_taxable = invoice_data.get('Total_Taxable_Value', 'N/A')
         total_gst = invoice_data.get('Total_GST', 'N/A')
         
-        message = "📄 INVOICE EXTRACTED\n\n"
-        message += "Invoice Details:\n"
-        message += f"• Invoice No: {invoice_no}\n"
-        message += f"• Date: {invoice_date}\n"
-        message += f"• Buyer: {buyer_name} ({buyer_gstin})\n"
-        message += f"• Total Taxable: ₹{total_taxable}\n"
-        message += f"• Total GST: ₹{total_gst}\n\n"
+        message = "📄 Here's what I extracted:\n\n"
+        message += "─────────────────────\n"
+        message += f"  Invoice No:   {invoice_no}\n"
+        message += f"  Date:         {invoice_date}\n"
+        message += f"  Seller:       {seller_name}\n"
+        message += f"  Buyer:        {buyer_name}\n"
+        message += f"  Buyer GSTIN:  {buyer_gstin}\n"
+        message += f"  Taxable:      Rs.{total_taxable}\n"
+        message += f"  Total GST:    Rs.{total_gst}\n"
+        message += "─────────────────────\n\n"
         
         # Add validation summary
         validation_summary = self._format_validation_summary(validation_result)
@@ -107,19 +111,17 @@ class CorrectionManager:
         )
         
         if low_conf_fields:
-            message += f"⚠️ {len(low_conf_fields)} field(s) need review:\n"
+            message += f"🔍 {len(low_conf_fields)} field(s) may need a closer look:\n"
             for field_name, field_value, reason, confidence in low_conf_fields:
                 if confidence is not None:
-                    message += f"• {field_name} (confidence: {confidence:.2f}) = \"{field_value}\"\n"
+                    conf_pct = int(confidence * 100)
+                    message += f"  • {field_name} ({conf_pct}% sure) = \"{field_value}\"\n"
                 else:
-                    message += f"• {field_name} ({reason}) = \"{field_value}\"\n"
+                    message += f"  • {field_name} ({reason}) = \"{field_value}\"\n"
             message += "\n"
         
-        # Add action buttons
-        message += "Actions:\n"
-        message += "/confirm - Save as-is\n"
-        message += "/correct - Make corrections\n"
-        message += "/cancel - Discard and restart"
+        # Note: action buttons are added by the bot via InlineKeyboardMarkup
+        message += "Looks good? Save it, or make corrections below."
         
         return message
     
@@ -132,19 +134,19 @@ class CorrectionManager:
         summary = ""
         
         if status == 'OK':
-            summary = "✅ Validation Status: All checks passed\n"
+            summary = "✅ All validation checks passed\n"
         elif status == 'WARNING':
-            summary = "⚠️ Validation Status: Warnings detected\n"
+            summary = "⚠️ A few things to double-check:\n"
             for warning in warnings[:3]:  # Show first 3 warnings
                 summary += f"  • {warning}\n"
             if len(warnings) > 3:
-                summary += f"  • ... and {len(warnings) - 3} more warning(s)\n"
+                summary += f"  • ... and {len(warnings) - 3} more\n"
         elif status == 'ERROR':
-            summary = "❌ Validation Status: Errors detected\n"
+            summary = "❌ Some issues found:\n"
             for error in errors[:3]:  # Show first 3 errors
                 summary += f"  • {error}\n"
             if len(errors) > 3:
-                summary += f"  • ... and {len(errors) - 3} more error(s)\n"
+                summary += f"  • ... and {len(errors) - 3} more\n"
         
         return summary
     
@@ -203,18 +205,20 @@ class CorrectionManager:
     
     def generate_correction_instructions(self) -> str:
         """Generate instructions for making corrections (without Markdown)"""
-        message = "📝 MAKE CORRECTIONS\n\n"
-        message = "Reply in format: field_name = new_value\n\n"
+        message = "✏️ Correction Mode\n\n"
+        message += "To fix a field, type:\n"
+        message += "  field_name = new_value\n\n"
+        message += "─────────────────────\n"
         message += "Available fields:\n"
         
         for short_name, full_name in self.CORRECTABLE_FIELDS.items():
-            message += f"• {short_name}\n"
+            message += f"  • {short_name}\n"
         
+        message += "─────────────────────\n"
         message += "\nExample:\n"
-        message += "buyer_gstin = 29AAAAA0000A1Z5\n\n"
-        message += "When done:\n"
-        message += "/done - Save with corrections\n"
-        message += "/cancel - Discard changes"
+        message += "  buyer_gstin = 29AAAAA0000A1Z5\n\n"
+        # Note: action buttons are added by the bot via InlineKeyboardMarkup
+        message += "Tap a button below when you're done."
         
         return message
     
@@ -287,17 +291,17 @@ class CorrectionManager:
             Formatted summary message
         """
         if not corrections:
-            return "No corrections made."
+            return "No corrections were made."
         
-        message = f"✅ **Invoice saved with {len(corrections)} correction(s)**\n\n"
+        message = f"✅ Saved with {len(corrections)} correction(s):\n\n"
         
         for field_name, new_value in corrections.items():
             old_value = original_data.get(field_name, '')
-            message += f"**{field_name}:**\n"
-            message += f"  Original: {old_value}\n"
-            message += f"  Corrected: {new_value}\n\n"
+            message += f"  {field_name}\n"
+            message += f"    was: {old_value}\n"
+            message += f"    now: {new_value}\n\n"
         
-        message += "Audit trail recorded."
+        message += "Changes logged for audit."
         
         return message
     

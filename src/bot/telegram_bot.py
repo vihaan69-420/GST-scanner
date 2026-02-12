@@ -278,21 +278,25 @@ class GSTScannerBot:
         """Handle /start command - Show welcome message with main menu"""
         user = update.effective_user
         
-        welcome_message = f"""
-👋 Welcome to GST Scanner Bot, {user.first_name}!
-
-I help you extract GST invoice data and append it to Google Sheets automatically.
-
-🎯 WHAT I CAN DO
-• Extract invoice data from images
-• Validate GST numbers and calculations
-• Save to Google Sheets with line items
-• Generate GSTR-1 and GSTR-3B exports
-• Process multiple invoices in batch
-• Provide detailed reports and statistics
-
-🚀 Select an option from the menu below:
-"""
+        welcome_message = (
+            f"Hey {user.first_name}! 👋\n"
+            f"Welcome to GST Scanner Bot.\n"
+            f"\n"
+            f"I turn invoice photos into organized Google Sheets "
+            f"data — automatically.\n"
+            f"\n"
+            f"─────────────────────\n"
+            f"Here's what I can do for you:\n"
+            f"\n"
+            f"  📸  Scan invoices from photos\n"
+            f"  ✅  Validate GST numbers & math\n"
+            f"  📊  Save to Google Sheets instantly\n"
+            f"  📄  Generate GSTR-1 & GSTR-3B reports\n"
+            f"  📦  Process handwritten orders too\n"
+            f"─────────────────────\n"
+            f"\n"
+            f"Ready? Pick an option below to get started!"
+        )
         
         # Check tenant registration
         try:
@@ -320,14 +324,15 @@ I help you extract GST invoice data and append it to Google Sheets automatically
                     await update.message.reply_text(welcome_message)
                     if tg_username:
                         await update.message.reply_text(
-                            "📝 One-time registration\n\n"
-                            "Please share your email ID to complete registration:"
+                            "📝 Quick Setup (one time only)\n\n"
+                            "Just need your email to get you started.\n"
+                            "Type it below:"
                         )
                     else:
                         await update.message.reply_text(
-                            "📝 One-time registration\n\n"
-                            "Please share your name and email ID "
-                            "(separated by a comma) to complete registration.\n\n"
+                            "📝 Quick Setup (one time only)\n\n"
+                            "I just need your name and email to get started.\n"
+                            "Type them separated by a comma.\n\n"
                             "Example: John Doe, john@example.com"
                         )
                     return
@@ -343,7 +348,7 @@ I help you extract GST invoice data and append it to Google Sheets automatically
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /menu command - Show main menu"""
         await update.message.reply_text(
-            "📋 Main Menu\n\nSelect an option:",
+            "What would you like to do? 👇",
             reply_markup=self.create_main_menu_keyboard()
         )
     
@@ -366,9 +371,10 @@ I help you extract GST invoice data and append it to Google Sheets automatically
             [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
         ])
         await update.message.reply_text(
-            "📸 Upload Invoice\n\n"
-            "Send me your invoice images (one or multiple pages).\n"
-            "Tap Process Invoice when you've sent all pages.",
+            "📸 Ready to scan!\n\n"
+            "Send me a photo of your invoice.\n"
+            "Multi-page? Just send all pages one by one.\n\n"
+            "I'll wait for all your images before processing.",
             reply_markup=keyboard
         )
     
@@ -377,8 +383,8 @@ I help you extract GST invoice data and append it to Google Sheets automatically
         if await self._check_registration_pending(update):
             return
         await update.message.reply_text(
-            "📊 Generate GST Input\n\n"
-            "Select the type of report or export you need:",
+            "📊 Reports & Exports\n\n"
+            "What do you need?",
             reply_markup=self.create_generate_submenu()
         )
     
@@ -417,7 +423,7 @@ I help you extract GST invoice data and append it to Google Sheets automatically
     def create_main_menu_keyboard(self):
         """Create main menu with inline buttons"""
         keyboard = [
-            [InlineKeyboardButton("📸 Upload Purchase Invoice", callback_data="menu_upload")],
+            [InlineKeyboardButton("📸 Scan Invoice", callback_data="menu_upload")],
         ]
         
         # ═══════════════════════════════════════════════════════
@@ -428,9 +434,9 @@ I help you extract GST invoice data and append it to Google Sheets automatically
         # ═══════════════════════════════════════════════════════
         
         keyboard.extend([
-            [InlineKeyboardButton("📊 Generate GST Input", callback_data="menu_generate")],
-            [InlineKeyboardButton("❓ Help", callback_data="menu_help")],
+            [InlineKeyboardButton("📊 Reports & Exports", callback_data="menu_generate")],
             [InlineKeyboardButton("📈 Usage & Stats", callback_data="menu_usage")],
+            [InlineKeyboardButton("❓ Help", callback_data="menu_help")],
         ])
         return InlineKeyboardMarkup(keyboard)
 
@@ -483,53 +489,40 @@ I help you extract GST invoice data and append it to Google Sheets automatically
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
-        help_message = """
-📚 GST SCANNER BOT HELP
-
-📄 PROCESSING GST INVOICES
-• Send invoice images one by one
-• For multi-page invoices, send all pages in sequence
-• Tap ✅ Process Invoice after sending all pages
-• Supported formats: JPG, JPEG, PNG
-• Maximum {max_images} images per invoice
-
-📦 PROCESSING HANDWRITTEN ORDERS
-• Tap 📦 Upload Order or type /order_upload
-• Send order note photos (can be multiple pages)
-• Tap ✅ Submit Order when done
-• Bot will extract items, match prices, and generate PDF
-
-⌨️ COMMANDS
-• /start — Welcome message & main menu
-• /upload — Upload GST invoice
-• /order_upload — Start order upload session
-• /cancel — Cancel current operation
-• /help — Show this help
-
-🔍 WHAT GETS EXTRACTED (GST INVOICE)
-• Invoice number and date
-• Seller and buyer details
-• GST numbers and state codes
-• Taxable amounts and GST totals
-• CGST, SGST, IGST breakup
-
-🔍 WHAT GETS EXTRACTED (ORDER)
-• Customer information
-• Line items (brand, part, color, quantity)
-• Automatic pricing match
-• Clean PDF invoice generation
-
-💡 TIPS
-• Ensure images are clear and readable
-• All pages should be from the same order/invoice
-• Good lighting improves accuracy
-• Use 📦 Upload Order for handwritten orders
-• Use 📸 Upload Invoice for printed GST invoices
-
-Need assistance? Contact your administrator.
-""".format(max_images=config.MAX_IMAGES_PER_INVOICE)
+        max_images = config.MAX_IMAGES_PER_INVOICE
+        help_message = (
+            "📚 How to Use GST Scanner Bot\n"
+            "\n"
+            "─────────────────────\n"
+            "📸 INVOICES\n"
+            "─────────────────────\n"
+            "1. Tap Upload Invoice (or just send a photo)\n"
+            "2. Send one or more pages (JPG/PNG)\n"
+            "3. Tap Process Invoice — done!\n"
+            f"\n"
+            f"Up to {max_images} images per invoice.\n"
+            "\n"
+            "─────────────────────\n"
+            "📦 HANDWRITTEN ORDERS\n"
+            "─────────────────────\n"
+            "1. Tap Upload Order from the menu\n"
+            "2. Send photos of order notes\n"
+            "3. Tap Submit Order for PDF generation\n"
+            "\n"
+            "─────────────────────\n"
+            "💡 Tips for best results\n"
+            "─────────────────────\n"
+            "• Good lighting = better accuracy\n"
+            "• Keep images clear and focused\n"
+            "• Send all pages from the same document\n"
+            "\n"
+            "Questions? Contact your administrator."
+        )
         
-        await update.message.reply_text(help_message)
+        await update.message.reply_text(
+            help_message,
+            reply_markup=self.create_main_menu_keyboard()
+        )
     
     # ═══════════════════════════════════════════════════════════════════
     # Epic 3: /subscribe command -- subscription enrollment
@@ -547,8 +540,12 @@ Need assistance? Contact your administrator.
 
         tenant = self.tenant_manager.get_tenant(user_id)
         if not tenant:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Get Started", callback_data="menu_main")]
+            ])
             await update.message.reply_text(
-                "You need to register first. Send /start to get started."
+                "You need to register first. Tap below to get started.",
+                reply_markup=keyboard
             )
             return
 
@@ -645,7 +642,7 @@ Need assistance? Contact your administrator.
             # Check feature flag
             if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
                 await query.edit_message_text(
-                    "⚠️ Order upload feature is not enabled.",
+                    "Order upload isn't available yet. Contact your admin to enable it.",
                     reply_markup=self.create_main_menu_keyboard()
                 )
                 return
@@ -713,15 +710,21 @@ Need assistance? Contact your administrator.
                     reply_markup=keyboard
                 )
             else:
-                await query.edit_message_text("❌ No active order session. Use /order_upload to start.")
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📦 Upload Order", callback_data="menu_order")]
+                ])
+                await query.edit_message_text(
+                    "No order in progress.\n\nTap below to start one!",
+                    reply_markup=keyboard
+                )
             return
         
         elif callback_data == "btn_done":
-            await query.edit_message_text("⏳ Processing invoice...")
+            await query.edit_message_text("🔄 Starting invoice processing...")
             # Trigger the done command logic
             session = self._get_user_session(user_id)
             if not session['images']:
-                await query.edit_message_text("❌ No images uploaded yet. Send photos first.")
+                await query.edit_message_text("Hmm, no images found. Send me a photo first!")
                 return
             # Delegate to done_command — create a fake text message context
             await self.done_command(update, context)
@@ -738,16 +741,180 @@ Need assistance? Contact your administrator.
                 cancelled = True
             if cancelled:
                 await query.edit_message_text(
-                    "✅ Cancelled!\n\n"
-                    "Send /start to begin again.",
+                    "All cleared! What's next? 👇",
                     reply_markup=self.create_main_menu_keyboard()
                 )
             else:
                 await query.edit_message_text(
-                    "Nothing to cancel.\n\n"
-                    "Send /start to begin.",
+                    "Nothing active to cancel.\n\n"
+                    "What would you like to do?",
                     reply_markup=self.create_main_menu_keyboard()
                 )
+            return
+        
+        elif callback_data == "btn_confirm":
+            # Save invoice as-is (from review screen)
+            session = self._get_user_session(user_id)
+            if session['state'] != 'reviewing':
+                await query.edit_message_text(
+                    "No invoice waiting for confirmation.\n\n"
+                    "Start a new one?",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            # Keep the extracted details visible — append saving status and remove buttons
+            current_text = query.message.text or ""
+            await query.edit_message_text(
+                current_text + "\n\n💾 Saving to Google Sheets..."
+            )
+            await self._save_invoice_to_sheets(update, user_id, session)
+            return
+        
+        elif callback_data == "btn_correct":
+            # Enter correction mode (from review screen)
+            session = self._get_user_session(user_id)
+            if session['state'] != 'reviewing':
+                await query.edit_message_text(
+                    "No invoice to correct right now.\n\n"
+                    "What would you like to do?",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            session['state'] = 'correcting'
+            instructions = self.correction_manager.generate_correction_instructions()
+            correction_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("💾 Save Corrections", callback_data="btn_save_corrections"),
+                ],
+                [
+                    InlineKeyboardButton("↩️ Cancel Correction", callback_data="btn_cancel_correction"),
+                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                ]
+            ])
+            await query.edit_message_text(instructions, reply_markup=correction_keyboard)
+            return
+        
+        elif callback_data == "btn_save_corrections":
+            # Save invoice with corrections applied
+            session = self._get_user_session(user_id)
+            if session['state'] != 'correcting':
+                await query.edit_message_text(
+                    "No corrections in progress.\n\n"
+                    "What would you like to do?",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            correction_count = len(session.get('corrections', {}))
+            # Keep the correction instructions visible — append saving status and remove buttons
+            current_text = query.message.text or ""
+            await query.edit_message_text(
+                current_text + f"\n\n💾 Applying {correction_count} correction(s) and saving..."
+            )
+            await self._save_invoice_to_sheets(update, user_id, session)
+            return
+        
+        elif callback_data == "btn_cancel_correction":
+            # Cancel correction mode only - go back to review screen with extracted data
+            session = self._get_user_session(user_id)
+            if session['state'] == 'correcting':
+                # Discard any corrections made, go back to reviewing
+                session['corrections'] = {}
+                session['state'] = 'reviewing'
+                
+                # Re-show the review message with buttons
+                invoice_data = session['data']['invoice_data']
+                review_msg = self.correction_manager.generate_review_message(
+                    invoice_data,
+                    session.get('confidence_scores', {}),
+                    session.get('validation_result', {}),
+                    config.CONFIDENCE_THRESHOLD_REVIEW
+                )
+                review_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Save As-Is", callback_data="btn_confirm"),
+                        InlineKeyboardButton("✏️ Make Corrections", callback_data="btn_correct"),
+                    ],
+                    [
+                        InlineKeyboardButton("🗑 Cancel & Resend New Images", callback_data="btn_cancel_resend"),
+                    ]
+                ])
+                await query.edit_message_text(review_msg, reply_markup=review_keyboard)
+            else:
+                await query.edit_message_text(
+                    "No correction in progress.\n\n"
+                    "What would you like to do?",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            return
+        
+        elif callback_data == "btn_cancel_resend":
+            # Full cancel - clear everything so user can resend new images
+            if user_id in self.order_sessions:
+                del self.order_sessions[user_id]
+            if user_id in self.user_sessions:
+                self._clear_user_session(user_id)
+            
+            upload_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
+                    InlineKeyboardButton("📦 Upload Order", callback_data="menu_order"),
+                ],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
+            await query.edit_message_text(
+                "🗑 Invoice discarded — fresh start!\n\n"
+                "Ready to try again?",
+                reply_markup=upload_keyboard
+            )
+            return
+        
+        elif callback_data == "menu_upload":
+            await query.edit_message_text(
+                "📸 Ready to scan!\n\n"
+                "Send me a photo of your invoice.\n"
+                "Multi-page? Just send all pages one by one.\n\n"
+                "I'll wait for all your images before processing."
+            )
+            return
+        
+        elif callback_data == "menu_order":
+            if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+                from order_normalization import OrderSession
+                # Cancel any existing sessions
+                if user_id in self.user_sessions:
+                    del self.user_sessions[user_id]
+                order_session = OrderSession(user_id, update.effective_user.username)
+                self.order_sessions[user_id] = order_session
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                ])
+                await query.edit_message_text(
+                    "📦 Order mode — ready!\n\n"
+                    "Send me photos of your handwritten order notes.\n"
+                    "Multiple pages? No problem — send them all.\n\n"
+                    "When you're done, tap ✅ Submit Order.",
+                    reply_markup=keyboard
+                )
+            else:
+                await query.edit_message_text("Order upload isn't available yet. Contact your admin to enable it.")
+            return
+        
+        elif callback_data == "menu_help":
+            await query.edit_message_text(
+                "Need a hand? Here's a quick overview:\n\n"
+                "📸 Upload Invoice — Send photos, I extract GST data\n"
+                "📦 Upload Order — Send handwritten orders for PDF\n"
+                "📊 Generate — GSTR-1, GSTR-3B, reports & stats\n\n"
+                "The fastest way to start? Just send me a photo!",
+                reply_markup=self.create_main_menu_keyboard()
+            )
+            return
+        
+        elif callback_data == "menu_main":
+            await query.edit_message_text(
+                "What would you like to do? 👇",
+                reply_markup=self.create_main_menu_keyboard()
+            )
             return
         
         elif callback_data == "btn_next":
@@ -767,13 +934,13 @@ Need assistance? Contact your administrator.
                     [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
                 ])
                 await query.edit_message_text(
-                    f"✅ Invoice {len(session['batch'])} saved!\n\n"
+                    f"Invoice {len(session['batch'])} queued!\n\n"
                     f"Now send pages for invoice #{batch_num}.\n"
-                    f"Tap Process All when done with all invoices.",
+                    f"When you're done with all invoices, tap Process All.",
                     reply_markup=keyboard
                 )
             else:
-                await query.edit_message_text("⚠️ No pages to save. Send photos first.")
+                await query.edit_message_text("No pages yet — send me some photos first!")
             return
         # ═══════════════════════════════════════════════════════
         
@@ -792,18 +959,19 @@ Need assistance? Contact your administrator.
                             tier_name = tier['name']
                             break
                     await query.edit_message_text(
-                        f"Subscription updated to: {tier_name}\n\n"
-                        "Choose an option:",
+                        f"✅ Subscription updated to {tier_name}!\n\n"
+                        "What would you like to do next?",
                         reply_markup=self.create_main_menu_keyboard()
                     )
                 else:
                     await query.edit_message_text(
-                        "Failed to update subscription. Please try again.",
+                        "😕 Couldn't update your subscription.\n\n"
+                        "Please try again.",
                         reply_markup=self.create_main_menu_keyboard()
                     )
             else:
                 await query.edit_message_text(
-                    "Subscription service unavailable.",
+                    "😕 Subscription service is temporarily unavailable.",
                     reply_markup=self.create_main_menu_keyboard()
                 )
             return
@@ -822,13 +990,10 @@ Need assistance? Contact your administrator.
                 [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
             ])
             await query.edit_message_text(
-                "📷 Single Invoice Upload Mode\n\n"
-                "✅ Ready to receive photos!\n\n"
-                "📌 INSTRUCTIONS\n"
-                "1. Send me one or more images of your invoice\n"
-                "2. For multi-page invoices, send all pages\n"
-                "3. Tap ✅ Process Invoice when you've sent all pages\n\n"
-                "I'll extract the data and save it to Google Sheets.",
+                "📸 Ready to scan!\n\n"
+                "Send me your invoice photo(s).\n"
+                "Multi-page? Send all pages — I'll combine them.\n\n"
+                "Tap ✅ Process Invoice when you're done.",
                 reply_markup=keyboard
             )
         
@@ -846,14 +1011,12 @@ Need assistance? Contact your administrator.
                 [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
             ])
             await query.edit_message_text(
-                "📦 Batch Upload Mode\n\n"
-                "✅ Ready for multiple invoices!\n\n"
-                "📌 INSTRUCTIONS\n"
-                "1. Upload all pages of first invoice\n"
-                "2. Tap ⏭ Next Invoice to save and start next\n"
-                "3. Repeat for all invoices\n"
-                "4. Tap ✅ Process All to process entire batch\n\n"
-                "This is perfect for processing multiple invoices at once.",
+                "📦 Batch mode — ready for multiple invoices!\n\n"
+                "1. Send pages for the first invoice\n"
+                "2. Tap ⏭ Next Invoice\n"
+                "3. Repeat for each invoice\n"
+                "4. Tap ✅ Process All when done\n\n"
+                "Great for processing several invoices at once.",
                 reply_markup=keyboard
             )
         
@@ -935,37 +1098,33 @@ Need assistance? Contact your administrator.
         # ═══════════════════════════════════════════════════════
         
         elif callback_data == "help_start":
-            help_text = """🚀 Getting Started Guide
-
-Welcome to GST Scanner Bot! Here's how to use it:
-
-Step 1: Upload Invoice
-Send me a photo of your GST invoice (JPG/PNG format)
-
-Step 2: Process
-Type /done after sending all pages
-
-Step 3: Review
-I'll extract all GST data automatically
-
-Step 4: Save
-Data is saved to your Google Sheet
-
-That's it! The bot handles:
-✅ Invoice number & date
-✅ Seller & buyer details
-✅ GST breakup (CGST/SGST/IGST)
-✅ Line items with HSN codes
-✅ Validation & deduplication
-
-Tips for best results:
-📸 Take clear, well-lit photos
-📄 Include all pages for multi-page invoices
-🔍 Ensure GST numbers are visible
-
-Ready to start? Click below!"""
+            help_text = (
+                "🚀 Getting Started\n"
+                "\n"
+                "It's simple — just 4 steps:\n"
+                "\n"
+                "1️⃣  Send me a photo of your invoice\n"
+                "2️⃣  Tap Process Invoice when ready\n"
+                "3️⃣  Review what I extracted\n"
+                "4️⃣  Save — it goes straight to your Google Sheet\n"
+                "\n"
+                "─────────────────────\n"
+                "What I extract automatically:\n"
+                "  • Invoice number & date\n"
+                "  • Seller & buyer details\n"
+                "  • GST breakup (CGST/SGST/IGST)\n"
+                "  • Line items with HSN codes\n"
+                "\n"
+                "─────────────────────\n"
+                "Tips for best results:\n"
+                "  📸  Clear, well-lit photos\n"
+                "  📄  Include all pages of multi-page invoices\n"
+                "  🔍  Make sure GST numbers are visible\n"
+                "\n"
+                "Ready to try?"
+            )
             keyboard = [
-                [InlineKeyboardButton("Upload First Invoice", callback_data="upload_single")],
+                [InlineKeyboardButton("📤 Upload First Invoice", callback_data="upload_single")],
                 [InlineKeyboardButton("🔙 Back", callback_data="menu_help")]
             ]
             await query.edit_message_text(
@@ -974,39 +1133,28 @@ Ready to start? Click below!"""
             )
         
         elif callback_data == "help_upload":
-            help_text = """📸 How to Upload Invoices
-
-Single Invoice:
-1. Click "Upload Single Invoice"
-2. Send invoice photo(s)
-3. Type /done to process
-
-Multiple Invoices (Batch):
-1. Click "Upload Batch"
-2. Send pages of first invoice
-3. Type /next for next invoice
-4. Repeat for all invoices
-5. Type /done to process all
-
-Supported Formats:
-✅ JPG, JPEG, PNG
-✅ Photos (direct from camera)
-✅ Image files (sent as documents)
-⏳ PDF (coming soon!)
-
-Multi-page Invoices:
-If your invoice has multiple pages, send them all before typing /done
-
-Tips:
-• Maximum 10 images per invoice
-• Good lighting improves accuracy
-• Avoid blurry or tilted images
-• Ensure text is readable
-
-Commands:
-/done - Process uploaded images
-/cancel - Clear images and start over
-/next - Save current & start next (batch mode)"""
+            help_text = (
+                "📸 Upload Guide\n"
+                "\n"
+                "Single invoice:\n"
+                "  1. Send your invoice photo(s)\n"
+                "  2. Tap ✅ Process Invoice — done!\n"
+                "\n"
+                "Batch mode (multiple invoices):\n"
+                "  1. Send pages for the first invoice\n"
+                "  2. Tap ⏭ Next Invoice\n"
+                "  3. Repeat for each invoice\n"
+                "  4. Tap ✅ Process All when finished\n"
+                "\n"
+                "─────────────────────\n"
+                "Supported: JPG, JPEG, PNG\n"
+                "Coming soon: PDF\n"
+                "Max: 10 images per invoice\n"
+                "─────────────────────\n"
+                "\n"
+                "For multi-page invoices, just send all\n"
+                "pages before tapping Process."
+            )
             await query.edit_message_text(
                 help_text,
                 reply_markup=self.create_help_submenu()
@@ -1015,128 +1163,102 @@ Commands:
         elif callback_data == "help_corrections":
             if not config.ENABLE_MANUAL_CORRECTIONS:
                 await query.edit_message_text(
-                    "✏️ Manual Corrections\n\n"
-                    "Manual corrections are currently disabled.\n"
-                    "Contact your administrator to enable this feature.",
+                    "✏️ Corrections are not enabled right now.\n\n"
+                    "Contact your administrator to turn this on.",
                     reply_markup=self.create_help_submenu()
                 )
             else:
-                help_text = """✏️ Manual Corrections Guide
-
-When the bot extracts data, you can review and correct it before saving.
-
-When Corrections Are Needed:
-The bot will prompt you if:
-• Confidence score is low (< 70%)
-• Validation warnings detected
-• Critical fields are unclear
-
-How to Correct:
-1. Bot shows extracted data
-2. Click "Correct" or type /correct
-3. Enter corrections in format:
-   field_name = value
-
-Example:
-buyer_gstin = 29AAAAA0000A1Z5
-invoice_value = 125000.00
-
-Available Fields:
-• invoice_no
-• invoice_date
-• seller_gstin
-• buyer_gstin
-• invoice_value
-• total_taxable_value
-• total_gst
-(and more...)
-
-Commands:
-/correct - Start correction mode
-/confirm - Save without corrections
-/done - Save with corrections
-/cancel - Discard everything"""
+                help_text = (
+                    "✏️ Corrections Guide\n"
+                    "\n"
+                    "After extraction, I'll show you the data.\n"
+                    "You can review and fix anything before saving.\n"
+                    "\n"
+                    "I'll flag fields that may need attention\n"
+                    "(low confidence or validation issues).\n"
+                    "\n"
+                    "─────────────────────\n"
+                    "How it works:\n"
+                    "  1. Tap ✏️ Make Corrections\n"
+                    "  2. Type: field_name = new_value\n"
+                    "  3. Tap 💾 Save when done\n"
+                    "\n"
+                    "Example:\n"
+                    "  buyer_gstin = 29AAAAA0000A1Z5\n"
+                    "─────────────────────\n"
+                    "\n"
+                    "Your buttons:\n"
+                    "  ✅  Save As-Is — keep data as extracted\n"
+                    "  ✏️  Make Corrections — edit fields\n"
+                    "  💾  Save Corrections — save edits\n"
+                    "  ↩️  Cancel Correction — go back to review\n"
+                    "  🗑  Cancel & Resend — start fresh"
+                )
                 await query.edit_message_text(
                     help_text,
                     reply_markup=self.create_help_submenu()
                 )
         
         elif callback_data == "help_export":
-            help_text = """📊 Export & Reports Guide
-
-GSTR-1 Export:
-Generate CSV files for GSTR-1 filing:
-• B2B Invoices (Business-to-Business)
-• B2C Small (Under ₹2.5L)
-• HSN Summary (with quantities & values)
-
-GSTR-3B Summary:
-Monthly summary JSON for GSTR-3B:
-• Total tax liability
-• ITC available
-• Tax payable breakdown
-
-Operational Reports:
-Various reports for analysis:
-• Processing statistics
-• Validation errors
-• Duplicate attempts
-• Correction history
-
-How to Export:
-1. Click "Generate GST input"
-2. Select export type
-3. Enter month (1-12)
-4. Enter year (e.g., 2026)
-5. Receive CSV/JSON files
-
-Commands:
-/export_gstr1 - GSTR-1 exports
-/export_gstr3b - GSTR-3B summary
-/reports - Operational reports
-/stats - Quick statistics"""
+            help_text = (
+                "📊 Exports & Reports\n"
+                "\n"
+                "GSTR-1 Export (CSV)\n"
+                "  • B2B invoices\n"
+                "  • B2C small (under 2.5L)\n"
+                "  • HSN summary\n"
+                "\n"
+                "GSTR-3B Summary (JSON)\n"
+                "  • Tax liability\n"
+                "  • ITC available\n"
+                "  • Tax payable breakdown\n"
+                "\n"
+                "Operational Reports\n"
+                "  • Processing stats\n"
+                "  • Validation errors\n"
+                "  • Duplicate attempts\n"
+                "  • Correction history\n"
+                "\n"
+                "─────────────────────\n"
+                "How to export:\n"
+                "  1. Tap Generate GST Input\n"
+                "  2. Pick your export type\n"
+                "  3. Enter month and year\n"
+                "  4. Get your CSV/JSON file!"
+            )
             await query.edit_message_text(
                 help_text,
                 reply_markup=self.create_generate_submenu()
             )
         
         elif callback_data == "help_trouble":
-            help_text = """🔧 Troubleshooting
-
-Common Issues:
-
-1. Image not recognized
-• Ensure good lighting
-• Avoid glare and shadows
-• Keep camera steady (no blur)
-• Try taking photo again
-
-2. Wrong data extracted
-• Check if image is clear
-• Verify GST numbers are visible
-• Use /correct to fix specific fields
-• Send additional pages if multi-page
-
-3. Validation errors
-• Check GSTIN format (15 chars)
-• Verify dates are valid
-• Ensure amounts match invoice
-• Review error message for details
-
-4. Duplicate invoice warning
-• Bot found similar invoice already processed
-• Check invoice number and date
-• Use /override if you're sure it's unique
-• Use /cancel if it's actually duplicate
-
-5. Bot not responding
-• Check your internet connection
-• Try /cancel and start over
-• Bot may be processing (be patient)
-• Contact support if persists
-
-Still having issues?
-Contact your administrator or support team."""
+            help_text = (
+                "🔧 Troubleshooting\n"
+                "\n"
+                "Image not recognized?\n"
+                "  • Better lighting, less glare\n"
+                "  • Hold camera steady\n"
+                "  • Try taking the photo again\n"
+                "\n"
+                "Wrong data extracted?\n"
+                "  • Use ✏️ Make Corrections to fix fields\n"
+                "  • Send clearer or additional pages\n"
+                "\n"
+                "Validation errors?\n"
+                "  • GSTIN should be 15 characters\n"
+                "  • Check that dates and amounts match\n"
+                "\n"
+                "Duplicate warning?\n"
+                "  • I found a similar invoice already saved\n"
+                "  • Save anyway if you're sure it's unique\n"
+                "\n"
+                "Bot not responding?\n"
+                "  • Check your internet connection\n"
+                "  • Tap ❌ Cancel and try again\n"
+                "  • I might still be processing — give it a moment\n"
+                "\n"
+                "Still stuck? Contact your administrator."
+            )
             await query.edit_message_text(
                 help_text,
                 reply_markup=self.create_help_submenu()
@@ -1226,15 +1348,19 @@ If audit logging is enabled, additional details:
 • Processing metadata
 
 View Statistics:
-Use /stats for overall processing statistics
-Use /reports for detailed analysis"""
+Tap 📊 Quick Stats for overall processing statistics
+Tap 📋 Reports for detailed analysis"""
             await query.edit_message_text(
                 help_text,
                 reply_markup=self.create_usage_submenu()
             )
         
         elif callback_data == "stats_export":
-            await query.message.reply_text(
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📄 GSTR-1 Export", callback_data="gen_gstr1")],
+                [InlineKeyboardButton("🔙 Back", callback_data="menu_generate")]
+            ])
+            await query.edit_message_text(
                 "💾 Export Processing Data\n\n"
                 "Your data is already in Google Sheets!\n\n"
                 "Sheets Available:\n"
@@ -1244,7 +1370,8 @@ Use /reports for detailed analysis"""
                 "• HSN_Master - Product codes\n\n"
                 "You can export directly from Google Sheets:\n"
                 "File → Download → CSV/Excel\n\n"
-                "Or use /export_gstr1 for GSTR-1 CSV exports."
+                "Or tap below for GSTR-1 CSV exports.",
+                reply_markup=keyboard
             )
     
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1258,24 +1385,32 @@ Use /reports for detailed analysis"""
             self._clear_user_session(user_id)
             
             await update.message.reply_text(
-                f"✅ Cancelled! Cleared {image_count} image(s).\n"
-                "Send new invoice images whenever you're ready."
+                f"All cleared ({image_count} image(s) removed).\n\n"
+                "What's next? 👇",
+                reply_markup=self.create_main_menu_keyboard()
             )
         else:
             await update.message.reply_text(
-                "No active invoice to cancel.\n"
-                "Send an invoice image to start!"
+                "Nothing active to cancel.\n\n"
+                "What would you like to do?",
+                reply_markup=self.create_main_menu_keyboard()
             )
     
     async def confirm_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /confirm command - save invoice without corrections"""
         user_id = update.effective_user.id
+        msg = update.effective_message
         session = self._get_user_session(user_id)
         
         if session['state'] != 'reviewing':
-            await update.message.reply_text(
-                "⚠️ No invoice pending confirmation.\n"
-                "Use /done after uploading images."
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
+            await msg.reply_text(
+                "No invoice waiting to confirm.\n\n"
+                "Start by uploading an invoice.",
+                reply_markup=keyboard
             )
             return
         
@@ -1284,17 +1419,23 @@ Use /reports for detailed analysis"""
     
     async def correct_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /correct command - start correction mode"""
+        msg = update.effective_message
         if not config.ENABLE_MANUAL_CORRECTIONS:
-            await update.message.reply_text("Manual corrections are disabled.")
+            await msg.reply_text("Manual corrections are disabled.")
             return
         
         user_id = update.effective_user.id
         session = self._get_user_session(user_id)
         
         if session['state'] != 'reviewing':
-            await update.message.reply_text(
-                "⚠️ No invoice pending corrections.\n"
-                "Use /done after uploading images."
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
+            await msg.reply_text(
+                "No invoice to correct right now.\n\n"
+                "Start by uploading an invoice.",
+                reply_markup=keyboard
             )
             return
         
@@ -1302,7 +1443,16 @@ Use /reports for detailed analysis"""
         session['state'] = 'correcting'
         
         instructions = self.correction_manager.generate_correction_instructions()
-        await update.message.reply_text(instructions)  # No Markdown to avoid parsing errors
+        correction_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("💾 Save Corrections", callback_data="btn_save_corrections"),
+            ],
+            [
+                InlineKeyboardButton("↩️ Cancel Correction", callback_data="btn_cancel_correction"),
+                InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+            ]
+        ])
+        await msg.reply_text(instructions, reply_markup=correction_keyboard)
     
     async def override_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /override command - save duplicate invoice anyway"""
@@ -1328,7 +1478,7 @@ Use /reports for detailed analysis"""
         """Save invoice data to Google Sheets with Tier 2 audit trail"""
         msg = update.effective_message
         try:
-            await msg.reply_text("📊 Step 4/4: Updating Google Sheets...")
+            await msg.reply_text("⏳ Saving to Google Sheets...  (4/4)")
             
             invoice_data = session['data']['invoice_data']
             line_items_data = session['data']['line_items_data']
@@ -1426,7 +1576,14 @@ Use /reports for detailed analysis"""
             # ═══════════════════════════════════════════════════════
             # CRITICAL: Send success to user IMMEDIATELY (Phase 3)
             # ═══════════════════════════════════════════════════════
-            await msg.reply_text(success_message)  # No Markdown - plain text only
+            post_save_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📸 Upload Another", callback_data="menu_upload"),
+                    InlineKeyboardButton("📊 Reports", callback_data="menu_generate"),
+                ],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
+            await msg.reply_text(success_message, reply_markup=post_save_keyboard)  # No Markdown - plain text only
             # User now has confirmation - invoice processing COMPLETE
             # ═══════════════════════════════════════════════════════
             
@@ -1707,48 +1864,54 @@ Use /reports for detailed analysis"""
         total_taxable = invoice_data.get('Total_Taxable_Value', 'N/A')
         total_gst = invoice_data.get('Total_GST', 'N/A')
         
-        success_message = f"""
-✅ INVOICE PROCESSED SUCCESSFULLY!
-
-📄 Invoice Details:
-• Invoice No: {invoice_no}
-• Date: {invoice_date}
-• Seller: {seller_name}
-• Buyer: {buyer_name}
-
-📦 Line Items: {len(line_items)} items extracted
-
-💰 GST Summary:
-• Invoice Value: Rs.{invoice_value}
-• Taxable Amount: Rs.{total_taxable}
-• Total GST: Rs.{total_gst}
-"""
-        
+        # Build GST tax breakdown
+        tax_lines = []
         igst = invoice_data.get('IGST_Total', '')
         cgst = invoice_data.get('CGST_Total', '')
         sgst = invoice_data.get('SGST_Total', '')
-        
         if igst:
-            success_message += f"  - IGST: Rs.{igst}\n"
+            tax_lines.append(f"  IGST: Rs.{igst}")
         if cgst:
-            success_message += f"  - CGST: Rs.{cgst}\n"
+            tax_lines.append(f"  CGST: Rs.{cgst}")
         if sgst:
-            success_message += f"  - SGST: Rs.{sgst}\n"
+            tax_lines.append(f"  SGST: Rs.{sgst}")
+        tax_breakdown = "\n".join(tax_lines)
         
         validation_status = validation_result.get('status', 'UNKNOWN')
-        success_message += f"\n✔️ Validation: {validation_status}\n"
+        
+        success_message = (
+            "✅ Invoice saved successfully!\n"
+            "\n"
+            "─────────────────────\n"
+            f"  Invoice No:   {invoice_no}\n"
+            f"  Date:         {invoice_date}\n"
+            f"  Seller:       {seller_name}\n"
+            f"  Buyer:        {buyer_name}\n"
+            f"  Line Items:   {len(line_items)}\n"
+            "─────────────────────\n"
+            "\n"
+            "💰 GST Summary\n"
+            f"  Invoice Value:  Rs.{invoice_value}\n"
+            f"  Taxable:        Rs.{total_taxable}\n"
+            f"  Total GST:      Rs.{total_gst}\n"
+        )
+        
+        if tax_breakdown:
+            success_message += tax_breakdown + "\n"
+        
+        success_message += f"\n  Validation: {validation_status}\n"
         
         if corrections:
-            success_message += f"\n📝 Corrections Applied: {len(corrections)} field(s)\n"
+            success_message += f"\n📝 {len(corrections)} correction(s) applied\n"
         
         if is_duplicate_override:
-            success_message += "\n⚠️ Saved as Duplicate Override\n"
+            success_message += "\n⚠️ Saved as duplicate override\n"
         
         if audit_data:
             processing_time = audit_data.get('Processing_Time_Seconds', 0)
-            success_message += f"\n⏱️ Processing time: {processing_time:.1f}s\n"
+            success_message += f"\n⏱ Processed in {processing_time:.1f}s\n"
         
-        success_message += "\n✅ Data has been appended to Google Sheets!"
+        success_message += "\n📊 Data saved to Google Sheets."
         
         return success_message
     
@@ -1768,10 +1931,21 @@ Use /reports for detailed analysis"""
         
         session = self._get_user_session(user_id)
         
+        # If user is in correction mode, /done means save with corrections
+        if session['state'] == 'correcting':
+            correction_count = len(session.get('corrections', {}))
+            await msg.reply_text(f"💾 Applying {correction_count} correction(s) and saving...")
+            await self._save_invoice_to_sheets(update, user_id, session)
+            return
+        
         if not session['images'] and not session.get('batch'):
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
             await msg.reply_text(
-                "❌ No images to process!\n"
-                "Send invoice images first, then type /done"
+                "No images yet! Send me a photo first.",
+                reply_markup=keyboard
             )
             return
         
@@ -1783,23 +1957,28 @@ Use /reports for detailed analysis"""
         
         # Single invoice processing
         if not session['images']:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
             await msg.reply_text(
-                "❌ No images to process!\n"
-                "Send invoice images first, then type /done"
+                "No images yet! Send me a photo first.",
+                reply_markup=keyboard
             )
             return
         
         image_paths = session['images']
         session['start_time'] = datetime.now()
         
+        page_word = "page" if len(image_paths) == 1 else "pages"
         await msg.reply_text(
-            f"⏳ Processing {len(image_paths)} page(s)...\n"
-            "This may take a moment. Please wait."
+            f"🔄 Got it! Processing {len(image_paths)} {page_word}...\n\n"
+            "Sit tight — this usually takes 15-30 seconds."
         )
         
         try:
             # Step 1: OCR - Extract text from all images
-            await msg.reply_text("📄 Step 1/4: Extracting text from images...")
+            await msg.reply_text("⏳ Reading invoice text...  (1/4)")
             ocr_start_time = datetime.now()
             
             ocr_result = await asyncio.to_thread(self.ocr_engine.extract_text_from_images, image_paths)
@@ -1823,7 +2002,7 @@ Use /reports for detailed analysis"""
             session['ocr_text'] = ocr_text
             
             # Step 2: Parse GST data with Tier 1 (line items + validation)
-            await msg.reply_text("🔍 Step 2/4: Parsing invoice and line items...")
+            await msg.reply_text("⏳ Extracting GST details...  (2/4)")
             parsing_start_time = datetime.now()
             
             result = await asyncio.to_thread(self.gst_parser.parse_invoice_with_validation, ocr_text)
@@ -1879,7 +2058,16 @@ Use /reports for detailed analysis"""
                         validation_result,
                         config.CONFIDENCE_THRESHOLD_REVIEW
                     )
-                    await msg.reply_text(review_msg)
+                    review_keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("✅ Save As-Is", callback_data="btn_confirm"),
+                            InlineKeyboardButton("✏️ Make Corrections", callback_data="btn_correct"),
+                        ],
+                        [
+                            InlineKeyboardButton("🗑 Cancel & Resend New Images", callback_data="btn_cancel_resend"),
+                        ]
+                    ])
+                    await msg.reply_text(review_msg, reply_markup=review_keyboard)
                     return
             
             # Step 5: Tier 2 - Deduplication Check (warn-only mode)
@@ -1907,18 +2095,21 @@ Use /reports for detailed analysis"""
                     print(f"[DUPLICATE] Invoice {invoice_data.get('Invoice_No', 'unknown')} detected as duplicate but saving anyway (warn-only mode)")
             
             # No review needed - proceed to save (even if duplicate)
-            await msg.reply_text("✅ Step 3/4: Validation complete...")
+            await msg.reply_text("⏳ Validating data...  (3/4)")
             await self._save_invoice_to_sheets(update, user_id, session)
             
         except Exception as e:
-            error_message = f"""
-❌ Processing Failed!
-
-Error: {str(e)}
-
-Please try again or contact support if the issue persists.
-"""
-            await msg.reply_text(error_message)
+            error_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Try Again", callback_data="menu_upload")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
+            await msg.reply_text(
+                "😕 Something went wrong during processing.\n\n"
+                f"Details: {str(e)}\n\n"
+                "This can happen with blurry images or unusual formats.\n"
+                "Try re-sending a clearer photo.",
+                reply_markup=error_keyboard
+            )
             print(f"Error processing invoice for user {user_id}: {str(e)}")
     
     # ═══════════════════════════════════════════════════════════════════
@@ -1930,7 +2121,7 @@ Please try again or contact support if the issue persists.
         if await self._check_registration_pending(update):
             return
         if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
-            await update.message.reply_text("⚠️ Order upload feature is not enabled.")
+            await update.message.reply_text("Order upload isn't available yet. Contact your admin to enable it.")
             return
         
         user_id = update.effective_user.id
@@ -1948,34 +2139,38 @@ Please try again or contact support if the issue persists.
             [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
         ])
         await update.message.reply_text(
-            "📦 Order Upload Mode Activated!\n\n"
-            "✅ Ready to receive order pages!\n\n"
-            "📌 INSTRUCTIONS\n"
-            "1. Send me photos of handwritten order notes\n"
-            "2. You can send multiple pages if needed\n"
-            "3. Tap ✅ Submit Order when you've sent all pages\n\n"
-            "I'll extract items, match pricing, and generate a PDF.",
+            "📦 Order mode — ready!\n\n"
+            "Send me photos of your handwritten order notes.\n"
+            "Multiple pages? No problem — send them all.\n\n"
+            "When you're done, tap ✅ Submit Order.\n"
+            "I'll extract items, match prices, and generate a clean PDF.",
             reply_markup=keyboard
         )
     
     async def order_submit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /order_submit command - ask user for output format then process"""
         if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
-            await update.message.reply_text("⚠️ Order upload feature is not enabled.")
+            await update.message.reply_text("Order upload isn't available yet. Contact your admin to enable it.")
             return
         
         user_id = update.effective_user.id
         
         # Check if user has an active order session
+        msg = update.effective_message
         if user_id not in self.order_sessions:
-            await update.message.reply_text(
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 Upload Order", callback_data="menu_order")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
+            await msg.reply_text(
                 "❌ No Active Order Session\n\n"
                 "You need to start an order upload session first!\n\n"
                 "📌 HOW TO UPLOAD AN ORDER\n"
-                "1. Type /order_upload (or click 📦 Upload Order)\n"
+                "1. Tap 📦 Upload Order below\n"
                 "2. Send your order photos\n"
                 "3. Tap ✅ Submit Order\n\n"
-                "Note: Regular invoice upload (/upload) is different from order upload."
+                "Note: Invoice upload is different from order upload.",
+                reply_markup=keyboard
             )
             return
         
@@ -2007,7 +2202,14 @@ Please try again or contact support if the issue persists.
     async def _process_order_with_format(self, update: Update, user_id: int, output_format: str):
         """Process submitted order with the chosen output format (pdf or csv)"""
         if user_id not in self.order_sessions:
-            await update.effective_message.reply_text("❌ Order session expired. Please start over with /order_upload")
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 Upload Order", callback_data="menu_order")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
+            await update.effective_message.reply_text(
+                "Your order session expired.\n\nTap below to start a new one.",
+                reply_markup=keyboard
+            )
             return
         
         order_session = self.order_sessions[user_id]
@@ -2015,17 +2217,17 @@ Please try again or contact support if the issue persists.
         # Submit the order
         if not order_session.submit():
             await update.effective_message.reply_text(
-                "❌ Cannot submit order.\n\n"
-                "The order may have already been submitted."
+                "Looks like this order was already submitted!"
             )
             return
         
+        page_word = "page" if len(order_session.pages) == 1 else "pages"
         await update.effective_message.reply_text(
-            f"✅ Order submitted!\n\n"
-            f"📄 Order ID: {order_session.order_id}\n"
-            f"📄 Pages: {len(order_session.pages)}\n"
-            f"📋 Format: {output_format.upper()}\n\n"
-            f"Processing your order... This may take a moment."
+            f"🔄 Processing order...\n\n"
+            f"  Order ID: {order_session.order_id}\n"
+            f"  Pages: {len(order_session.pages)} {page_word}\n"
+            f"  Format: {output_format.upper()}\n\n"
+            f"Sit tight — this usually takes a moment."
         )
         
         # Epic 3: tenant-aware orchestrator initialisation
@@ -2056,9 +2258,15 @@ Please try again or contact support if the issue persists.
             # ──────────────────────────────────────────────────
         except Exception as e:
             print(f"[ERROR] Order processing failed: {e}")
+            order_error_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Try Again", callback_data="menu_order")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+            ])
             await update.effective_message.reply_text(
-                f"❌ Order processing failed: {str(e)}\n\n"
-                f"Please try again or contact support."
+                f"😕 Couldn't process that order.\n\n"
+                f"Details: {str(e)}\n\n"
+                f"Try re-sending clearer photos.",
+                reply_markup=order_error_keyboard
             )
         finally:
             # Clean up session
@@ -2116,16 +2324,17 @@ Please try again or contact support if the issue persists.
                 ]
             ])
             await update.message.reply_text(
-                f"✅ Page {page_number} received!\n\n"
-                f"Send more pages or tap Submit Order to process.",
+                f"📄 Page {page_number} received!\n\n"
+                f"Got more pages? Send them.\n"
+                f"All done? Tap Submit Order below.",
                 reply_markup=keyboard
             )
             
         except Exception as e:
             print(f"[ERROR] Order photo download failed: {e}")
             await update.message.reply_text(
-                f"❌ Failed to download image: {str(e)}\n"
-                f"Please try again."
+                f"😕 Couldn't download that image.\n\n"
+                f"Please try sending it again."
             )
     
     async def _handle_order_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2175,16 +2384,17 @@ Please try again or contact support if the issue persists.
                 ]
             ])
             await update.message.reply_text(
-                f"✅ Page {page_number} received!\n\n"
-                f"Send more pages or tap Submit Order to process.",
+                f"📄 Page {page_number} received!\n\n"
+                f"Got more pages? Send them.\n"
+                f"All done? Tap Submit Order below.",
                 reply_markup=keyboard
             )
             
         except Exception as e:
             print(f"[ERROR] Order document download failed: {e}")
             await update.message.reply_text(
-                f"❌ Failed to download image: {str(e)}\n"
-                f"Please try again."
+                f"😕 Couldn't download that image.\n\n"
+                f"Please try sending it again."
             )
     
     # ═══════════════════════════════════════════════════════════════════
@@ -2209,9 +2419,13 @@ Please try again or contact support if the issue persists.
         session = invoice_session
         
         if session['state'] != 'uploading':
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel & Start Over", callback_data="btn_cancel_resend")]
+            ])
             await update.message.reply_text(
-                "⚠️ Please complete the current action first.\n"
-                "Use /cancel to start over."
+                "Looks like you're in the middle of something.\n\n"
+                "Finish that first, or tap below to start over.",
+                reply_markup=keyboard
             )
             return
         
@@ -2223,8 +2437,8 @@ Please try again or contact support if the issue persists.
                 ]
             ])
             await update.message.reply_text(
-                f"⚠️ Maximum {config.MAX_IMAGES_PER_INVOICE} images per invoice.\n"
-                f"Tap Process Invoice or Cancel.",
+                f"That's the limit — {config.MAX_IMAGES_PER_INVOICE} images max per invoice.\n\n"
+                f"Ready to process, or want to cancel?",
                 reply_markup=keyboard
             )
             return
@@ -2256,8 +2470,9 @@ Please try again or contact support if the issue persists.
                     ]
                 ])
                 await update.message.reply_text(
-                    f"✅ Page {page_count} received!\n\n"
-                    f"Send more pages or tap Process Invoice.",
+                    f"📄 Page {page_count} received!\n\n"
+                    f"Got more pages? Send them.\n"
+                    f"All done? Tap the button below.",
                     reply_markup=keyboard
                 )
                 return  # Success - exit retry loop
@@ -2277,13 +2492,14 @@ Please try again or contact support if the issue persists.
                     error_msg = str(last_error)
                     if "Timed out" in error_msg or "timeout" in error_msg.lower():
                         await update.message.reply_text(
-                            f"❌ Download timed out after {max_retries} attempts.\n\n"
-                            f"Please check your internet connection and try again."
+                            "⏱ The download timed out.\n\n"
+                            "This usually means a slow connection.\n"
+                            "Try sending the image again."
                         )
                     else:
                         await update.message.reply_text(
-                            f"❌ Failed to download image: {error_msg}\n"
-                            f"Please try again."
+                            f"😕 Couldn't download that image.\n\n"
+                            f"Please try sending it again."
                         )
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2386,23 +2602,22 @@ Please try again or contact support if the issue persists.
                         error_msg = str(last_error)
                         if "Timed out" in error_msg or "timeout" in error_msg.lower():
                             await update.message.reply_text(
-                                f"❌ Download timed out after {max_retries} attempts.\n\n"
-                                f"This image may be too large or your connection is slow.\n"
-                                f"Try:\n"
-                                f"• Send as photo (not file) for faster processing\n"
-                                f"• Use a smaller/compressed image\n"
-                                f"• Check your internet connection"
+                                "⏱ The download timed out.\n\n"
+                                "The file might be too large. A few tips:\n"
+                                "  • Send as a photo (not file) — it's faster\n"
+                                "  • Try a smaller or compressed image\n"
+                                "  • Check your internet connection"
                             )
                         else:
                             await update.message.reply_text(
-                                f"❌ Failed to download image: {error_msg}\n\n"
-                                f"Please try again or contact support."
+                                f"😕 Couldn't download that file.\n\n"
+                                f"Please try sending it again."
                             )
         else:
             await update.message.reply_text(
-                "PDF support coming soon!\n"
-                "Please send images (JPG/PNG) for now.\n\n"
-                "Tip: You can also send images as photos (not files) for faster processing."
+                "📎 PDF support is coming soon!\n\n"
+                "For now, please send images (JPG or PNG).\n"
+                "Tip: Send as a photo rather than a file — it's faster!"
             )
     
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2438,9 +2653,9 @@ Please try again or contact support if the issue persists.
                         username = name_part  # Use provided name as username too
                 else:
                     await update.message.reply_text(
-                        "⚠️ Invalid format. Please enter your name and email "
-                        "separated by a comma.\n\n"
-                        "Example: John Doe, john@example.com"
+                        "Hmm, that doesn't look right.\n\n"
+                        "Please type your name and email, separated by a comma:\n"
+                        "  Example: John Doe, john@example.com"
                     )
                     return
             else:
@@ -2449,8 +2664,8 @@ Please try again or contact support if the issue persists.
                     email = text
                 else:
                     await update.message.reply_text(
-                        "⚠️ That doesn't look like a valid email address.\n"
-                        "Please enter a valid email (e.g. name@example.com):"
+                        "Hmm, that doesn't look like a valid email.\n\n"
+                        "Try again — for example: name@example.com"
                     )
                     return
             
@@ -2466,19 +2681,21 @@ Please try again or contact support if the issue persists.
                         email=email,
                     )
                     await update.message.reply_text(
-                        "✅ Registration complete!\n\n"
-                        "You're all set. Choose an option below:",
+                        "You're all set! 🎉\n\n"
+                        "Registration complete. Let's get started!",
                         reply_markup=self.create_main_menu_keyboard()
                     )
                 else:
                     await update.message.reply_text(
-                        "⚠️ Registration service unavailable. Please try /start again later.",
+                        "😕 Registration service is temporarily unavailable.\n\n"
+                        "Please try again in a moment by tapping /start.",
                         reply_markup=self.create_main_menu_keyboard()
                     )
             except Exception as e:
                 print(f"[WARNING] Tenant registration failed: {e}")
                 await update.message.reply_text(
-                    "⚠️ Registration failed. Please try /start again.",
+                    "😕 Something went wrong with registration.\n\n"
+                    "Please try again by tapping /start.",
                     reply_markup=self.create_main_menu_keyboard()
                 )
             return
@@ -2498,28 +2715,41 @@ Please try again or contact support if the issue persists.
                 field_name, new_value = result
                 session['corrections'][field_name] = new_value
                 
+                correction_count = len(session['corrections'])
+                correction_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(f"💾 Save {correction_count} Correction(s)", callback_data="btn_save_corrections"),
+                    ],
+                    [
+                        InlineKeyboardButton("↩️ Cancel Correction", callback_data="btn_cancel_correction"),
+                        InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                    ]
+                ])
                 await update.message.reply_text(
-                    f"✅ Updated: {field_name} = {new_value}\n\n"
-                    f"Continue editing or:\n"
-                    f"/done - Save with corrections\n"
-                    f"/cancel - Discard changes"
+                    f"Got it! {field_name} updated.\n\n"
+                    f"Keep editing, or use the buttons below.",
+                    reply_markup=correction_keyboard
                 )
             else:
                 await update.message.reply_text(
-                    "⚠️ Invalid format. Use: field_name = value\n\n"
-                    "Example: buyer_gstin = 29AAAAA0000A1Z5"
+                    "Hmm, I didn't understand that.\n\n"
+                    "Use this format: field_name = value\n"
+                    "  Example: buyer_gstin = 29AAAAA0000A1Z5"
                 )
             return
         
-        # Check if user typed /done as correction confirm
-        if session['state'] == 'correcting' and update.message.text.strip().lower() == '/done':
-            await self._save_invoice_to_sheets(update, user_id, session)
-            return
-        
         # Default response
+        default_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
+                InlineKeyboardButton("📦 Upload Order", callback_data="menu_order"),
+            ],
+            [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
+        ])
         await update.message.reply_text(
-            "👋 Send me invoice images to get started!\n"
-            "Type /help for instructions."
+            "Not sure what to do with that! 🤔\n\n"
+            "To get started, send me an invoice photo — or pick an option below.",
+            reply_markup=default_keyboard
         )
     
     def run(self):
