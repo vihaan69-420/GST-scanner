@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --muted: #64748b;
+  --muted-foreground: #94a3b8;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --gradient-start: #e0e7ff;
+  --gradient-mid: #fce7f3;
+  --gradient-end: #e0f2fe;
+  --glass: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(148, 163, 184, 0.2);
+  --radius: 1rem;
+  --radius-lg: 1.5rem;
+  --shadow-soft: 0 4px 24px -4px rgba(15, 23, 42, 0.08);
+  --shadow-glow: 0 0 40px -8px rgba(99, 102, 241, 0.35);
+  --shadow-glow-strong: 0 0 60px -12px rgba(99, 102, 241, 0.4);
+  --section-tint: rgba(99, 102, 241, 0.04);
+  --section-tint-alt: rgba(248, 250, 252, 0.8);
+}
+
+html.light {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --background: #0f172a;
+    --foreground: #f1f5f9;
+    --muted: #64748b;
+    --muted-foreground: #94a3b8;
+    --card: #1e293b;
+    --card-foreground: #f1f5f9;
+    --glass: rgba(30, 41, 59, 0.65);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --gradient-start: #312e81;
+    --gradient-mid: #581c87;
+    --gradient-end: #0c4a6e;
+    --shadow-soft: 0 4px 24px -4px rgba(0, 0, 0, 0.35);
+    --shadow-glow: 0 0 40px -8px rgba(99, 102, 241, 0.4);
+    --shadow-glow-strong: 0 0 60px -12px rgba(99, 102, 241, 0.35);
+    --section-tint: rgba(99, 102, 241, 0.06);
+    --section-tint-alt: rgba(30, 41, 59, 0.5);
+  }
+}
+
+html.dark {
+  --background: #0f172a;
+  --foreground: #f1f5f9;
+  --muted: #64748b;
+  --muted-foreground: #94a3b8;
+  --card: #1e293b;
+  --card-foreground: #f1f5f9;
+  --glass: rgba(30, 41, 59, 0.65);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --gradient-start: #312e81;
+  --gradient-mid: #581c87;
+  --gradient-end: #0c4a6e;
+  --shadow-soft: 0 4px 24px -4px rgba(0, 0, 0, 0.35);
+  --shadow-glow: 0 0 40px -8px rgba(99, 102, 241, 0.4);
+  --shadow-glow-strong: 0 0 60px -12px rgba(99, 102, 241, 0.35);
+  --section-tint: rgba(99, 102, 241, 0.06);
+  --section-tint-alt: rgba(30, 41, 59, 0.5);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+}
+
+.gradient-mesh {
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -20%, var(--gradient-start), transparent 50%),
+    radial-gradient(ellipse 60% 40% at 80% 50%, var(--gradient-mid), transparent 45%),
+    radial-gradient(ellipse 50% 50% at 20% 80%, var(--gradient-end), transparent 45%);
+}
+
+.hero-gradient {
+  background:
+    radial-gradient(ellipse 100% 80% at 50% -30%, var(--gradient-start) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 50% at 80% 20%, var(--gradient-mid), transparent 45%),
+    radial-gradient(ellipse 60% 60% at 20% 60%, var(--gradient-end), transparent 50%);
+}
