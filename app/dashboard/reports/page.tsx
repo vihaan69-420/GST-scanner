@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { generateReport } from "@/services/api";
+import { generateReport, downloadReport } from "@/services/api";
 import WizardModal from "@/components/modals/WizardModal";
 import ResultCard from "@/components/chat/ResultCard";
 
@@ -50,7 +50,15 @@ export default function ReportsPage() {
           <ResultCard
             title="Report ready"
             fields={[{ label: "File", value: result.name }]}
-            onDownload={() => {}}
+            onDownload={() => {
+              if (result.url === "#") {
+                alert("Report generation failed. Please try again.");
+                return;
+              }
+              downloadReport(result.url, result.name).catch((err) => {
+                alert(`Download failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+              });
+            }}
           />
         )}
       </div>

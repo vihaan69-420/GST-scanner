@@ -293,6 +293,8 @@ export async function correctInvoice(
 let _currentOrderId: string | null = null;
 
 export async function uploadOrder(files: File[], format: "PDF" | "CSV"): Promise<{ success: boolean }> {
+  _currentOrderFormat = format;
+
   // Step 1: Create order session
   const session = await apiJson<{ order_id: string }>("/orders", { method: "POST" });
   _currentOrderId = session.order_id;
@@ -308,8 +310,12 @@ export async function uploadOrder(files: File[], format: "PDF" | "CSV"): Promise
   return { success: true };
 }
 
-export async function processOrder(): Promise<MockOrder> {
+let _currentOrderFormat: "PDF" | "CSV" = "PDF";
+
+export async function processOrder(format?: "PDF" | "CSV"): Promise<MockOrder> {
   if (!_currentOrderId) throw new Error("No active order session");
+
+  const fmt = format || _currentOrderFormat;
 
   const result = await apiJson<{
     order_id: string;
@@ -323,7 +329,7 @@ export async function processOrder(): Promise<MockOrder> {
     line_items: Record<string, unknown>[];
     pdf_available: boolean;
     processing_time_seconds: number;
-  }>(`/orders/${_currentOrderId}/submit?output_format=pdf`, { method: "POST" });
+  }>(`/orders/${_currentOrderId}/submit?output_format=${fmt.toLowerCase()}`, { method: "POST" });
 
   const orderId = _currentOrderId;
   _currentOrderId = null;
@@ -335,7 +341,7 @@ export async function processOrder(): Promise<MockOrder> {
     totalQuantity: result.total_quantity,
     subtotal: result.subtotal,
     total: result.subtotal,
-    format: "PDF",
+    format: fmt,
     date: result.order_date || new Date().toISOString().slice(0, 10),
     line_items: result.line_items,
   };
@@ -345,6 +351,42 @@ export function getOrderPdfUrl(orderId: string): string {
   return `${API_BASE}/orders/${orderId}/pdf`;
 }
 
+/**
+ * Download an order output file (PDF or CSV) via authenticated fetch,
+ * then trigger a browser download dialog.
+ */
+export async function downloadOrderFile(orderId: string): Promise<void> {
+  const res = await apiFetch(`/orders/${orderId}/download`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.detail || err.error || `Download failed (${res.status})`);
+  }
+
+  const blob = await res.blob();
+
+  // Extract filename from Content-Disposition header
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const filenameMatch = disposition.match(/filename="?([^";\n]+)"?/);
+
+  // Determine file extension from Content-Type if Content-Disposition is unavailable
+  let filename = filenameMatch?.[1];
+  if (!filename) {
+    const contentType = res.headers.get("Content-Type") || "";
+    const ext = contentType.includes("csv") ? "csv" : "pdf";
+    filename = `order_${orderId.slice(0, 8)}.${ext}`;
+  }
+
+  // Trigger browser download
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ── Report functions ─────────────────────────────────────────────
 
 export async function generateReport(
@@ -352,19 +394,41 @@ export async function generateReport(
   year: number,
   type: string
 ): Promise<{ url: string; name: string }> {
-  const endpoint = type.toLowerCase().includes("3b") ? "/exports/gstr3b" : "/exports/gstr1";
+  const isGstr3b = type.toLowerCase().includes("3b");
+  const endpoint = isGstr3b ? "/exports/gstr3b" : "/exports/gstr1";
+  const ext = isGstr3b ? "txt" : "json";
+  const name = `GST_Report_${type}_${month}_${year}.${ext}`;
+
   try {
     await apiJson(`${endpoint}?month=${month}&year=${year}`);
     return {
-      url: `${API_BASE}${endpoint}?month=${month}&year=${year}`,
-      name: `GST_Report_${type}_${month}_${year}.json`,
+      url: `${endpoint}/download?month=${month}&year=${year}`,
+      name,
     };
   } catch {
-    return {
-      url: "#",
-      name: `GST_Report_${type}_${month}_${year}.json`,
-    };
+    return { url: "#", name };
   }
+}
+
+/**
+ * Download a generated report (GSTR-1 or GSTR-3B) via authenticated fetch.
+ */
+export async function downloadReport(downloadPath: string, filename: string): Promise<void> {
+  const res = await apiFetch(downloadPath);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.detail || err.error || `Download failed (${res.status})`);
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ── History functions ────────────────────────────────────────────

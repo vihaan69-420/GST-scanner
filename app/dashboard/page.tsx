@@ -7,6 +7,7 @@ import {
   confirmInvoice,
   uploadOrder,
   processOrder,
+  downloadOrderFile,
   getUsageStats,
   ORDER_PROCESS_STEPS,
   type MockInvoice,
@@ -74,6 +75,7 @@ export default function DashboardPage() {
   const [invoiceResult, setInvoiceResult] = useState<MockInvoice | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
+  const [lastOrderId, setLastOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     getUsageStats().then((s) => {
@@ -156,6 +158,7 @@ export default function DashboardPage() {
       }
       await uploadOrder(pages, format);
       const order = await processOrder();
+      setLastOrderId(order.id);
       addMessage({
         role: "bot",
         type: "result",
@@ -165,7 +168,7 @@ export default function DashboardPage() {
       addMessage({
         role: "bot",
         type: "text",
-        content: "You can download your file below. To view in Google Sheets: Open Google Sheets → Check invoice_header tab → Find your username.",
+        content: "You can download your file below. To view in Google Sheets: Open Google Sheets \u2192 Check invoice_header tab \u2192 Find your username.",
         buttons: [
           { label: "Download", action: "download-order" },
           { label: "Open Google Sheets", action: "open-sheets" },
@@ -313,7 +316,23 @@ export default function DashboardPage() {
       }
       if (action === "download-order") {
         addMessage({ role: "user", type: "text", content: "Download" });
-        addMessage({ role: "bot", type: "text", content: "Download started. (This is a demo — no file is actually downloaded.)" });
+        if (!lastOrderId) {
+          addMessage({ role: "bot", type: "text", content: "No order file available. Please process an order first." });
+          return;
+        }
+        addMessage({ role: "bot", type: "text", content: "Downloading your file..." });
+        downloadOrderFile(lastOrderId)
+          .then(() => {
+            addMessage({ role: "bot", type: "text", content: "Download complete!" });
+          })
+          .catch((err) => {
+            addMessage({
+              role: "bot",
+              type: "text",
+              content: `Download failed: ${err instanceof Error ? err.message : "Unknown error"}. Try again.`,
+              buttons: [{ label: "Retry Download", action: "download-order" }],
+            });
+          });
         return;
       }
       if (action === "open-sheets") {
@@ -337,6 +356,7 @@ export default function DashboardPage() {
       runOrderProcessing,
       handleConfirmInvoice,
       setUpgradeModalOpen,
+      lastOrderId,
     ]
   );
 

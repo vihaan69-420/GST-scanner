@@ -323,8 +323,9 @@ async def submit_order(
             else:
                 pdf_path = pdf_gen.generate_pdf(clean_invoice)
             session["pdf_path"] = pdf_path
-        except Exception:
-            pass  # Output generation is non-critical
+        except Exception as e:
+            print(f"[API] Warning: {output_format.upper()} generation failed: {e}")
+            # Output generation is non-critical; order data still saved to Sheets
 
         # ── Step 8: Save to Google Sheets (tenant-aware) ──
         try:

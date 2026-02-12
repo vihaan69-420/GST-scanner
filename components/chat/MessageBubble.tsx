@@ -5,6 +5,7 @@ import type { ChatMessageRole } from "@/store/appStore";
 import ResultCard from "./ResultCard";
 import ActionCard from "./ActionCard";
 import type { MockInvoice, MockOrder } from "@/services/api";
+import { downloadOrderFile } from "@/services/api";
 
 export interface MessageBubbleProps {
   role: ChatMessageRole;
@@ -92,11 +93,16 @@ export default function MessageBubble({
                   { label: "Date", value: payload.date },
                   { label: "Total items", value: payload.items },
                   { label: "Total quantity", value: payload.totalQuantity },
-                  { label: "Subtotal", value: `₹${payload.subtotal}` },
-                  { label: "Total", value: `₹${payload.total}` },
+                  { label: "Subtotal", value: `\u20B9${payload.subtotal}` },
+                  { label: "Total", value: `\u20B9${payload.total}` },
                   { label: "Format", value: payload.format },
                 ]}
-                onDownload={() => {}}
+                onDownload={() => {
+                  downloadOrderFile(payload.id).catch((err) => {
+                    console.error("Download failed:", err);
+                    alert(`Download failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+                  });
+                }}
               />
             ) : null}
           </div>

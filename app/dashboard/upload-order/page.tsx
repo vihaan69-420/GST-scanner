@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useAppStore } from "@/store/appStore";
-import { processOrder } from "@/services/api";
+import { uploadOrder, processOrder, downloadOrderFile } from "@/services/api";
 import MessageBubble from "@/components/chat/MessageBubble";
 import UploadZone from "@/components/chat/UploadZone";
 import ProgressTracker from "@/components/chat/ProgressTracker";
@@ -31,6 +31,7 @@ export default function UploadOrderPage() {
       setStepStatus(i, "done");
     }
     setHasActiveSession(true);
+    await uploadOrder(files, format);
     const order = await processOrder();
     setResult(order);
     addMessage({ role: "bot", type: "text", content: "Order processed. Download summary below." });
@@ -65,10 +66,14 @@ export default function UploadOrderPage() {
             fields={[
               { label: "Order ID", value: result.orderId },
               { label: "Items", value: result.items },
-              { label: "Total", value: `₹${result.total}` },
+              { label: "Total", value: `\u20B9${result.total}` },
               { label: "Format", value: result.format },
             ]}
-            onDownload={() => {}}
+            onDownload={() => {
+              downloadOrderFile(result.id).catch((err) => {
+                alert(`Download failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+              });
+            }}
           />
         )}
       </div>
