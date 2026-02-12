@@ -4,13 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import {
   uploadInvoice,
-  processInvoice,
+  confirmInvoice,
   uploadOrder,
   processOrder,
   getUsageStats,
   ORDER_PROCESS_STEPS,
   type MockInvoice,
-} from "@/services/mockApi";
+} from "@/services/api";
 import { TIER_PLANS } from "@/lib/tiers";
 import MessageBubble from "@/components/chat/MessageBubble";
 import UploadZone from "@/components/chat/UploadZone";
@@ -112,6 +112,39 @@ export default function DashboardPage() {
       buttons: MENU_BUTTONS,
     });
   }, [messages.length, addMessage]);
+
+  const handleConfirmInvoice = useCallback(async () => {
+    if (!invoiceResult?.session_id) return;
+    setProcessing(true);
+    addMessage({ role: "bot", type: "text", content: "Saving invoice to Google Sheets..." });
+
+    try {
+      const result = await confirmInvoice(invoiceResult.session_id);
+      addMessage({
+        role: "bot",
+        type: "text",
+        content: `Invoice ${result.invoice_no} saved to Google Sheets successfully!\n\nTo view: Open Google Sheets > invoice_header tab > find your data.`,
+        buttons: [
+          { label: "Open Google Sheets", action: "open-sheets" },
+          { label: "Upload Another", action: "upload-invoice" },
+        ],
+      });
+    } catch (err) {
+      addMessage({
+        role: "bot",
+        type: "text",
+        content: `Failed to save: ${err instanceof Error ? err.message : "Unknown error"}. You can try again.`,
+        buttons: [
+          { label: "Retry Save", action: "confirm-invoice" },
+          { label: "Start Over", action: "upload-invoice" },
+        ],
+      });
+    } finally {
+      setProcessing(false);
+      setInvoiceResult(null);
+      setFlow(null);
+    }
+  }, [invoiceResult, addMessage]);
 
   const runOrderProcessing = useCallback(
     async (format: "PDF" | "CSV", pages: File[]) => {
@@ -265,6 +298,19 @@ export default function DashboardPage() {
         setUpgradeModalOpen(true);
         return;
       }
+      if (action === "confirm-invoice") {
+        handleConfirmInvoice();
+        return;
+      }
+      if (action === "cancel-invoice") {
+        addMessage({ role: "user", type: "text", content: "Start Over" });
+        addMessage({ role: "bot", type: "text", content: "Invoice discarded. Upload new files to try again." });
+        setInvoiceResult(null);
+        setUploadedFiles([]);
+        setProgressSteps([]);
+        setFlow("invoice");
+        return;
+      }
       if (action === "download-order") {
         addMessage({ role: "user", type: "text", content: "Download" });
         addMessage({ role: "bot", type: "text", content: "Download started. (This is a demo — no file is actually downloaded.)" });
@@ -289,6 +335,7 @@ export default function DashboardPage() {
       usageStats,
       tierPlan,
       runOrderProcessing,
+      handleConfirmInvoice,
       setUpgradeModalOpen,
     ]
   );
@@ -306,38 +353,62 @@ export default function DashboardPage() {
       );
       addMessage({ role: "user", type: "text", content: `Uploaded ${files.length} file(s).` });
       setProgressSteps(INVOICE_STEPS);
-      setStepStatus(0, "active");
-      await uploadInvoice(files);
-      setStepStatus(0, "done");
-      setStepStatus(1, "active");
-      addMessage({
-        role: "bot",
-        type: "text",
-        content: "Files received. Click “Process invoice” to extract data.",
-      });
       setHasActiveSession(true);
+      setProcessing(true);
+
+      // Step 1: Upload - OCR + Parse happens server-side in one call
+      setStepStatus(0, "active");
+      addMessage({ role: "bot", type: "text", content: "Uploading and running OCR..." });
+
+      try {
+        const invoice = await uploadInvoice(files);
+        setStepStatus(0, "done");
+
+        // Step 2: Parse complete
+        setStepStatus(1, "active");
+        await new Promise((r) => setTimeout(r, 300));
+        setStepStatus(1, "done");
+
+        // Step 3: Validate complete
+        setStepStatus(2, "active");
+        await new Promise((r) => setTimeout(r, 300));
+        setStepStatus(2, "done");
+        setStepStatus(3, "done");
+
+        setInvoiceResult(invoice);
+        setProcessing(false);
+
+        // Show extracted data
+        addMessage({
+          role: "bot",
+          type: "result",
+          content: "Invoice extracted successfully! Review the data below.",
+          payload: invoice,
+        });
+
+        // Show confirm/correct actions
+        addMessage({
+          role: "bot",
+          type: "text",
+          content: "Does this look correct? Confirm to save to Google Sheets, or start over.",
+          buttons: [
+            { label: "Confirm & Save to Sheets", action: "confirm-invoice" },
+            { label: "Start Over", action: "cancel-invoice" },
+          ],
+        });
+      } catch (err) {
+        setProcessing(false);
+        setStepStatus(0, "done");
+        addMessage({
+          role: "bot",
+          type: "text",
+          content: `Invoice processing failed: ${err instanceof Error ? err.message : "Unknown error"}. Please try again.`,
+        });
+        setFlow(null);
+      }
     },
     [addMessage, setProgressSteps, setStepStatus, setHasActiveSession, atInvoiceLimit]
   );
-
-  const handleProcessInvoice = useCallback(async () => {
-    if (uploadedFiles.length === 0 || atInvoiceLimit) return;
-    setProcessing(true);
-    setStepStatus(1, "done");
-    setStepStatus(2, "active");
-    const invoice = await processInvoice();
-    setStepStatus(2, "done");
-    setStepStatus(3, "done");
-    setInvoiceResult(invoice);
-    addMessage({
-      role: "bot",
-      type: "result",
-      content: "Invoice processed successfully.",
-      payload: invoice,
-    });
-    setProcessing(false);
-    setFlow(null);
-  }, [uploadedFiles.length, atInvoiceLimit, addMessage, setStepStatus]);
 
   const handleOrderPageUpload = useCallback(
     (files: File[]) => {
@@ -406,17 +477,12 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   )}
-                  <UploadZone onFilesSelected={handleInvoiceFiles} accept="image/*,.pdf" multiple={true} />
+                  {!processing && !invoiceResult && (
+                    <UploadZone onFilesSelected={handleInvoiceFiles} accept="image/*,.pdf" multiple={true} />
+                  )}
                   {progressSteps.length > 0 && <ProgressTracker steps={progressSteps} />}
-                  {uploadedFiles.length > 0 && progressSteps.length > 0 && !invoiceResult && (
-                    <ActionCard
-                      title="Ready to process"
-                      description="Your files are uploaded. Click below to extract invoice data."
-                      actions={[{ label: processing ? "Processing…" : "Process invoice", action: "process-invoice" }]}
-                      onActionClick={() => {
-                        if (!processing) handleProcessInvoice();
-                      }}
-                    />
+                  {processing && (
+                    <div className="text-center text-sm text-[var(--muted)] py-2">Processing invoice...</div>
                   )}
                 </>
               )}

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { fetchHistory } from "@/services/mockApi";
+import { fetchHistory } from "@/services/api";
 
 export default function HistoryPage() {
   const [items, setItems] = useState<Awaited<ReturnType<typeof fetchHistory>>>([]);

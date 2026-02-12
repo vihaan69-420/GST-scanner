@@ -109,6 +109,23 @@ export async function POST(request: Request) {
     users.push(newUser);
     setContent(USERS_KEY, JSON.stringify(users));
 
+    // Also register on FastAPI backend (for JWT-based API access)
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    try {
+      await fetch(`${apiUrl}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: reg.email,
+          password: reg.password,
+          full_name: reg.name,
+        }),
+      });
+    } catch {
+      // FastAPI registration is best-effort; user can still login later
+      // and the FastAPI login will fail gracefully
+    }
+
     delete pendingOtps[email];
     delete pendingReg[email];
     setContent(PENDING_OTP_KEY, JSON.stringify(pendingOtps));

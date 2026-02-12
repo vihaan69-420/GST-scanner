@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { generateReport } from "@/services/mockApi";
+import { generateReport } from "@/services/api";
 import WizardModal from "@/components/modals/WizardModal";
 import ResultCard from "@/components/chat/ResultCard";
 

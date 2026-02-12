@@ -403,6 +403,40 @@ SUBSCRIPTION_TIERS = json.loads(os.getenv('SUBSCRIPTION_TIERS', _default_tiers))
 DEFAULT_SUBSCRIPTION_TIER = os.getenv('DEFAULT_SUBSCRIPTION_TIER', 'free')
 
 
+# ═══════════════════════════════════════════════════════════════════
+# EPIC 4: REST API (FastAPI + Swagger + JWT Auth)
+# ═══════════════════════════════════════════════════════════════════
+
+# Master feature flag - enables the FastAPI REST API layer
+FEATURE_API_ENABLED = os.getenv('FEATURE_API_ENABLED', 'false').lower() == 'true'
+
+# API server configuration
+API_PORT = int(os.getenv('API_PORT', '8000'))
+API_HOST = os.getenv('API_HOST', '0.0.0.0')
+
+# Cloud Run PORT override: Cloud Run sets PORT to the single port it routes
+# traffic to (usually 8080). When the API is enabled on Cloud Run, FastAPI
+# should bind to this port so it receives external HTTP requests.
+_cloud_run_port = os.getenv('PORT')  # Set automatically by Cloud Run
+if _cloud_run_port and FEATURE_API_ENABLED:
+    API_PORT = int(_cloud_run_port)
+
+# JWT configuration
+API_JWT_SECRET = os.getenv('API_JWT_SECRET', '')  # Required when API is enabled
+API_JWT_ALGORITHM = os.getenv('API_JWT_ALGORITHM', 'HS256')
+API_JWT_EXPIRY_MINUTES = int(os.getenv('API_JWT_EXPIRY_MINUTES', '30'))
+API_JWT_REFRESH_EXPIRY_DAYS = int(os.getenv('API_JWT_REFRESH_EXPIRY_DAYS', '7'))
+
+# CORS configuration (comma-separated origins)
+API_CORS_ORIGINS = os.getenv('API_CORS_ORIGINS', 'http://localhost:3000').split(',')
+
+# SQLite user database path
+API_USER_DB_PATH = os.getenv('API_USER_DB_PATH', str(PROJECT_ROOT / 'data' / 'users.db'))
+
+# Rate limiting
+API_RATE_LIMIT_PER_MINUTE = int(os.getenv('API_RATE_LIMIT_PER_MINUTE', '60'))
+
+
 def validate_config():
     """Validate that all required configuration is present"""
     errors = []

@@ -16,15 +16,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create temp directories
-RUN mkdir -p /app/temp /app/exports /app/logs
+RUN mkdir -p /app/temp /app/exports /app/logs /app/data /app/orders
 
-# Expose health check port
+# Expose the single HTTP port (Cloud Run routes all traffic here via PORT)
 EXPOSE 8080
 
-# Environment defaults (can be overridden)
+# Environment defaults (can be overridden via Cloud Run env vars)
 ENV PYTHONUNBUFFERED=1
 ENV HEALTH_SERVER_PORT=8080
 ENV HEALTH_SERVER_ENABLED=true
+ENV FEATURE_API_ENABLED=false
+ENV API_HOST=0.0.0.0
 
-# Run the bot
+# Run the bot (FastAPI starts alongside it when FEATURE_API_ENABLED=true)
 CMD ["python", "start_bot.py"]

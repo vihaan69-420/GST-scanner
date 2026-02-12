@@ -8,6 +8,7 @@ import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { useAuth } from "@/context/AuthContext";
 import { getRoleFromCredentials } from "@/lib/auth";
+import { apiLogin, clearTokens } from "@/services/api";
 
 const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
   config: "Google sign-in is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
@@ -54,21 +55,30 @@ function LoginContent() {
     setLoading(true);
     const trimmedEmail = email.trim().toLowerCase();
     let role: "admin" | "user" | null = null;
+
+    // Try FastAPI backend first (issues JWT tokens for API access)
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: trimmedEmail, password }),
-      });
-      const data = (await res.json()) as { role?: "admin" | "user"; error?: string };
-      if (res.ok && data.role) {
-        role = data.role === "admin" ? "admin" : "user";
-      } else if (!res.ok && data.error) {
-        setLoginError(data.error);
-      }
+      const tokens = await apiLogin(trimmedEmail, password);
+      role = tokens.role === "admin" ? "admin" : "user";
     } catch {
-      role = getRoleFromCredentials(trimmedEmail, password);
+      // FastAPI unavailable - fall back to Next.js local auth
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: trimmedEmail, password }),
+        });
+        const data = (await res.json()) as { role?: "admin" | "user"; error?: string };
+        if (res.ok && data.role) {
+          role = data.role === "admin" ? "admin" : "user";
+        } else if (!res.ok && data.error) {
+          setLoginError(data.error);
+        }
+      } catch {
+        role = getRoleFromCredentials(trimmedEmail, password);
+      }
     }
+
     setLoading(false);
     if (role === null) return;
     setSession(trimmedEmail, role);

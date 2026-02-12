@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import type { ChatMessageRole } from "@/store/appStore";
 import ResultCard from "./ResultCard";
 import ActionCard from "./ActionCard";
-import type { MockInvoice, MockOrder } from "@/services/mockApi";
+import type { MockInvoice, MockOrder } from "@/services/api";
 
 export interface MessageBubbleProps {
   role: ChatMessageRole;

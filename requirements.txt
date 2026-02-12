@@ -11,4 +11,11 @@ aiohttp>=3.9.1
 openpyxl>=3.1.0    # Excel file reading for pricing sheet
 reportlab>=4.0.0   # PDF generation for clean invoices
 
+# Epic 4: REST API layer (FastAPI + Swagger + JWT auth)
+fastapi>=0.115.0
+uvicorn>=0.30.0
+PyJWT>=2.9.0
+bcrypt>=4.0.0
+python-multipart>=0.0.9
+
 # Cloud deployment support (google-generativeai includes google-auth)

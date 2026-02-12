@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { fetchHistory, generateReport, getUsageStats } from "@/services/mockApi";
+import { fetchHistory, generateReport, getUsageStats } from "@/services/api";
 import { useAppStore } from "@/store/appStore";
 import { TIER_PLANS } from "@/lib/tiers";
 import WizardModal from "@/components/modals/WizardModal";

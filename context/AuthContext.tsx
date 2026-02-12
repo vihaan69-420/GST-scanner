@@ -14,6 +14,7 @@ import {
   parseSessionCookie,
   serializeSession,
 } from "@/lib/auth";
+import { clearTokens } from "@/services/api";
 
 interface AuthContextValue {
   session: Session | null;
@@ -67,6 +68,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSessionState(null);
     const name = getSessionCookieName();
     document.cookie = `${name}=; path=/; max-age=0`;
+    // Clear FastAPI JWT tokens
+    clearTokens();
   }, []);
 
   const value: AuthContextValue = { session, setSession, logout };

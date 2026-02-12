@@ -44,9 +44,16 @@ def main():
         metrics = get_metrics_tracker()
         logger.info("Starting GST Scanner Bot", component="Main")
         
-        # Start health server if enabled
+        # Decide HTTP server strategy:
+        # - When FastAPI is enabled, it serves as the HTTP server (has /health)
+        #   so the separate health server is redundant (especially on Cloud Run
+        #   where only one port receives traffic).
+        # - When FastAPI is disabled, the health server runs as before.
+        api_handles_http = config.FEATURE_API_ENABLED
+
+        # Start health server only when FastAPI is NOT handling HTTP
         health_server = None
-        if config.HEALTH_SERVER_ENABLED:
+        if config.HEALTH_SERVER_ENABLED and not api_handles_http:
             health_server = HealthServer(
                 port=config.HEALTH_SERVER_PORT,
                 bot_instance=None,  # Will be set after bot creation
@@ -63,6 +70,33 @@ def main():
         if health_server:
             from utils.health_server import HealthCheckHandler
             HealthCheckHandler.bot_instance = bot
+        
+        # Start FastAPI REST API if enabled (runs alongside the bot)
+        if config.FEATURE_API_ENABLED:
+            if not config.API_JWT_SECRET:
+                raise ValueError("API_JWT_SECRET must be set when FEATURE_API_ENABLED=true")
+            import threading
+            import uvicorn
+            from api.main import create_app
+            
+            api_app = create_app()
+            api_thread = threading.Thread(
+                target=uvicorn.run,
+                args=(api_app,),
+                kwargs={"host": config.API_HOST, "port": config.API_PORT, "log_level": "info"},
+                daemon=True,
+                name="FastAPI-Server",
+            )
+            api_thread.start()
+            logger.info(
+                f"REST API running on http://{config.API_HOST}:{config.API_PORT} (Swagger: /docs)",
+                component="API",
+            )
+            if os.getenv('K_SERVICE'):
+                logger.info(
+                    f"Cloud Run detected: FastAPI is the primary HTTP server on PORT {config.API_PORT}",
+                    component="API",
+                )
         
         logger.info("Bot started successfully", component="Main")
         bot.run()

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useAppStore } from "@/store/appStore";
-import { processOrder } from "@/services/mockApi";
+import { processOrder } from "@/services/api";
 import MessageBubble from "@/components/chat/MessageBubble";
 import UploadZone from "@/components/chat/UploadZone";
 import ProgressTracker from "@/components/chat/ProgressTracker";

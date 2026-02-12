@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
-import { getUsageStats } from "@/services/mockApi";
+import { getUsageStats } from "@/services/api";
 import UpgradePlanModal from "@/components/modals/UpgradePlanModal";
 
 const TABS = ["Subscription", "Profile", "Usage", "Preferences"] as const;

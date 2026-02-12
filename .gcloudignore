@@ -1,10 +1,13 @@
 # Google Cloud Build ignore file
 # This overrides .gitignore for cloud builds
 
-# Ignore temp and output folders (at root level only)
+# Ignore temp, output, and runtime data folders (at root level only)
 /temp_invoices/
 /temp/
 /logs/
+/data/
+/orders/
+/Epic2 artifacts/
 
 # Ignore credentials and secrets
 .env
@@ -18,6 +21,7 @@ __pycache__/
 # Ignore IDE and system files
 .DS_Store
 .vscode/
+.cursor/
 .git/
 
 # Ignore media files
