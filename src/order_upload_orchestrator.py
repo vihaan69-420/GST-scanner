@@ -22,7 +22,7 @@ import os
 try:
     from src import config
     from src.order_upload_ocr import OrderOcrRunner
-    from src.order_upload_extraction import extract_lines_from_pages
+    from src.order_upload_extraction import extract_lines_from_pages, extract_all_from_pages
     from src.order_upload_dedupe import dedupe_lines
     from src.order_upload_price_matcher import PriceListLoader, PriceListMatcher
     from src.order_upload_sheets import OrderUploadSheets
@@ -30,7 +30,7 @@ try:
 except ImportError:
     import config
     from order_upload_ocr import OrderOcrRunner
-    from order_upload_extraction import extract_lines_from_pages
+    from order_upload_extraction import extract_lines_from_pages, extract_all_from_pages
     from order_upload_dedupe import dedupe_lines
     from order_upload_price_matcher import PriceListLoader, PriceListMatcher
     from order_upload_sheets import OrderUploadSheets
@@ -126,13 +126,20 @@ class OrderUploadOrchestrator:
                         timestamp=ts,
                     )
 
-            # Step 2: Parse into structured lines
-            order_lines = extract_lines_from_pages(ocr_results)
+            # Step 2: Parse into structured lines + extract customer info
+            customer_info, order_lines = extract_all_from_pages(ocr_results)
+            result["customer_info"] = customer_info
             
             if not order_lines:
                 result["errors"].append("No order lines extracted from images")
                 result["summary"] = "No valid order lines found in the images."
                 return result
+
+            # Sort all lines by S.N for consistent ordering
+            order_lines = sorted(
+                order_lines,
+                key=lambda x: int(x.get("sn", 0) or 0),
+            )
 
             # Step 3: Deduplicate
             kept_lines, skipped_lines = dedupe_lines(order_lines)
@@ -194,11 +201,16 @@ class OrderUploadOrchestrator:
                 except (ValueError, TypeError):
                     pass
 
+            # Sort output lines by S.N before writing to sheets and generating PDF
+            all_output_sorted = sorted(
+                matched_lines + unmatched_lines,
+                key=lambda x: int(x.get("sn", 0) or 0),
+            )
+
             # Step 5: Write matched + unmatched lines to sheets (if available)
             if self.sheets_manager:
-                all_output_lines = matched_lines + unmatched_lines
                 sheet_rows = []
-                for line in all_output_lines:
+                for line in all_output_sorted:
                     sheet_rows.append({
                         "S.N": line["sn"],
                         "PART NAME": line["part_name"],
@@ -228,11 +240,11 @@ class OrderUploadOrchestrator:
 
             # Step 6: Generate PDF
             try:
-                all_pdf_lines = matched_lines + unmatched_lines
                 pdf_path = generate_order_pdf(
-                    matched_lines=all_pdf_lines,
+                    matched_lines=all_output_sorted,
                     grand_total=grand_total,
                     order_id=order_id,
+                    customer_info=customer_info,
                 )
                 result["pdf_path"] = pdf_path
             except Exception as e:
@@ -242,9 +254,21 @@ class OrderUploadOrchestrator:
             # Step 7: Write order summary row to Order_Summary sheet
             if self.sheets_manager:
                 from datetime import datetime
+                # Build customer display name: Hindi (English) or just whichever is available
+                cust_display = ""
+                if customer_info.get("name"):
+                    cust_display = customer_info["name"]
+                    if customer_info.get("name_en"):
+                        cust_display += f" ({customer_info['name_en']})"
+                elif customer_info.get("name_en"):
+                    cust_display = customer_info["name_en"]
+
                 summary_row = {
                     "order_id": order_id or "",
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "customer_name": cust_display,
+                    "customer_phone": customer_info.get("phone", ""),
+                    "order_date": customer_info.get("date", ""),
                     "total_images": str(len(image_paths)),
                     "lines_extracted": str(len(order_lines)),
                     "lines_matched": str(len(matched_lines)),
@@ -259,6 +283,8 @@ class OrderUploadOrchestrator:
 
             # Build result
             result["success"] = True
+            # Include matched lines for image rendering (sendPhoto fallback)
+            result["_matched_lines"] = all_output_sorted
             result["stats"] = {
                 "total_extracted": len(order_lines),
                 "kept": len(kept_lines),
@@ -272,10 +298,26 @@ class OrderUploadOrchestrator:
             summary_parts = [
                 f"Order processing complete!",
                 f"",
+            ]
+
+            # Include customer details if available
+            if customer_info.get("name") or customer_info.get("name_en"):
+                name_display = customer_info.get("name", "")
+                if customer_info.get("name_en"):
+                    name_display += f" ({customer_info['name_en']})" if name_display else customer_info["name_en"]
+                summary_parts.append(f"Customer: {name_display}")
+            if customer_info.get("phone"):
+                summary_parts.append(f"Phone: {customer_info['phone']}")
+            if customer_info.get("date"):
+                summary_parts.append(f"Order Date: {customer_info['date']}")
+            if any(customer_info.get(k) for k in ("name", "name_en", "phone", "date")):
+                summary_parts.append("")
+
+            summary_parts.extend([
                 f"Extracted: {len(order_lines)} lines",
                 f"Kept: {len(kept_lines)} (skipped {len(skipped_lines)} duplicates)",
                 f"Matched: {len(matched_lines)} items with prices",
-            ]
+            ])
             
             if unmatched_lines:
                 summary_parts.append(f"Unmatched: {len(unmatched_lines)} items (no price found)")

@@ -7,6 +7,9 @@ Generates a clean, invoice-style PDF from matched order lines.
 Output table: S.N | PART NAME | PART NUMBER | PRICE | QTY | LINE TOTAL
 Followed by a highlighted GRAND TOTAL row.
 
+Optionally renders a customer header (Hindi/Devanagari name, phone, date)
+above the table when customer_info is provided.
+
 Guardrails:
 - New file, does NOT modify any existing PDF/invoice logic.
 - Only active when config.ENABLE_ORDER_UPLOAD is True.
@@ -30,11 +33,40 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 try:
     from src import config
 except ImportError:
     import config
+
+
+# ── Devanagari / Unicode font registration ─────────────────────
+# We attempt to register a TTF font that supports Devanagari script.
+# Windows ships with Nirmala UI; Linux/macOS may have Noto Sans Devanagari.
+# If none are found, we fall back to Helvetica (Hindi text will render as
+# boxes, but the PDF is still valid and English fields still display).
+
+_DEVANAGARI_FONT_NAME: Optional[str] = None
+
+_CANDIDATE_FONTS = [
+    # (font name to register, file path)
+    ("NirmalaUI", os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "Nirmala.ttf")),
+    ("NirmalaUI", os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "nirmala.ttf")),
+    ("NotoSansDevanagari", "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"),
+    ("NotoSansDevanagari", "/usr/share/fonts/noto/NotoSansDevanagari-Regular.ttf"),
+    ("Mangal", os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", "mangal.ttf")),
+]
+
+for _font_name, _font_path in _CANDIDATE_FONTS:
+    if os.path.exists(_font_path):
+        try:
+            pdfmetrics.registerFont(TTFont(_font_name, _font_path))
+            _DEVANAGARI_FONT_NAME = _font_name
+            break
+        except Exception:
+            continue
 
 
 def _ensure_order_upload_enabled() -> None:
@@ -47,6 +79,7 @@ def generate_order_pdf(
     grand_total: float = 0.0,
     order_id: Optional[str] = None,
     output_dir: Optional[str] = None,
+    customer_info: Optional[Dict] = None,
 ) -> str:
     """
     Generate an invoice-style PDF from matched order lines.
@@ -57,6 +90,8 @@ def generate_order_pdf(
         grand_total: Pre-computed grand total value.
         order_id: Optional order identifier for the filename and header.
         output_dir: Directory for the PDF. Defaults to config.TEMP_FOLDER.
+        customer_info: Optional dict with keys: phone, name, name_en, date.
+            When provided, a customer details line is rendered below the title.
 
     Returns:
         Absolute path to the generated PDF file.
@@ -100,6 +135,18 @@ def generate_order_pdf(
         spaceAfter=12,
     )
 
+    # Style for customer info line — uses Devanagari font if available
+    customer_font = _DEVANAGARI_FONT_NAME or "Helvetica"
+    customer_style = ParagraphStyle(
+        "CustomerInfo",
+        parent=styles["Normal"],
+        fontName=customer_font,
+        fontSize=11,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#333333"),
+        spaceAfter=8,
+    )
+
     elements.append(Paragraph("SAI-ABS Order Summary", title_style))
 
     sub_parts = []
@@ -108,6 +155,26 @@ def generate_order_pdf(
     sub_parts.append(f"Date: {datetime.now().strftime('%d %b %Y, %I:%M %p')}")
     sub_parts.append(f"Items: {len(matched_lines)}")
     elements.append(Paragraph(" | ".join(sub_parts), subtitle_style))
+
+    # ── Customer Details (optional) ─────────────────────────────
+    if customer_info and any(customer_info.get(k) for k in ("name", "name_en", "phone", "date")):
+        cust_parts = []
+        # Build name display: Hindi (English)
+        name_display = ""
+        if customer_info.get("name"):
+            name_display = customer_info["name"]
+            if customer_info.get("name_en"):
+                name_display += f" ({customer_info['name_en']})"
+        elif customer_info.get("name_en"):
+            name_display = customer_info["name_en"]
+        if name_display:
+            cust_parts.append(f"Customer: {name_display}")
+        if customer_info.get("phone"):
+            cust_parts.append(f"Phone: {customer_info['phone']}")
+        if customer_info.get("date"):
+            cust_parts.append(f"Date: {customer_info['date']}")
+        if cust_parts:
+            elements.append(Paragraph(" | ".join(cust_parts), customer_style))
 
     elements.append(Spacer(1, 4 * mm))
 

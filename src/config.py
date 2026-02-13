@@ -197,6 +197,9 @@ ENABLE_ORDER_UPLOAD = os.getenv('ENABLE_ORDER_UPLOAD', 'false').lower() == 'true
 # Local path to .xlsx price list file (used if set; otherwise falls back to Google Sheets Price_List)
 LOCAL_PRICE_LIST_PATH = os.getenv('LOCAL_PRICE_LIST_PATH', '')
 
+# Dashboard
+DASHBOARD_PORT = int(os.getenv('DASHBOARD_PORT', '8050'))
+
 # Monitoring Configuration
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE_MAX_MB = int(os.getenv('LOG_FILE_MAX_MB', '10'))
@@ -347,6 +350,9 @@ ORDER_ERRORS_COLUMNS = [
 ORDER_SUMMARY_COLUMNS = [
     'order_id',
     'timestamp',
+    'customer_name',
+    'customer_phone',
+    'order_date',
     'total_images',
     'lines_extracted',
     'lines_matched',

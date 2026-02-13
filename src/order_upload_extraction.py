@@ -17,11 +17,19 @@ Intermediate JSON shape per extracted line:
     "qty": int,            # quantity from circled number ONLY
     "source_page": int,    # 1-based page index
 }
+
+Customer info shape (from page header):
+{
+    "phone": str,          # 10-digit phone or ""
+    "name": str,           # Hindi/Devanagari name or ""
+    "name_en": str,        # English transliteration or ""
+    "date": str,           # date as written on paper or ""
+}
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import re
 
 
@@ -218,6 +226,108 @@ def extract_lines_from_page(page_no: int, ocr_text: str) -> List[OrderLine]:
     return lines
 
 
+def _split_header_and_body(ocr_text: str) -> Tuple[str, str]:
+    """
+    Split OCR text into header section and body (line items) section.
+
+    The header is separated from the body by a line containing only '---'.
+    If no separator is found, the entire text is treated as body (backward compat).
+
+    Returns:
+        (header_text, body_text)
+    """
+    # Look for the --- separator
+    separator_pattern = re.compile(r"^-{3,}\s*$", re.MULTILINE)
+    match = separator_pattern.search(ocr_text)
+    if match:
+        header = ocr_text[: match.start()].strip()
+        body = ocr_text[match.end() :].strip()
+        return header, body
+    # No separator → entire text is body (backward compatibility)
+    return "", ocr_text
+
+
+def extract_customer_info(ocr_text: str) -> Dict:
+    """
+    Extract customer header info from OCR text.
+
+    Expected header format (before the '---' separator):
+        PHONE[TAB]<phone>
+        NAME[TAB]<Hindi name> (<English transliteration>)
+        DATE[TAB]<date>
+
+    Returns:
+        Dict with keys: phone, name, name_en, date (all str, empty if not found)
+    """
+    result = {"phone": "", "name": "", "name_en": "", "date": ""}
+    header, _ = _split_header_and_body(ocr_text)
+    if not header:
+        return result
+
+    for raw_line in header.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Try tab-separated key-value first
+        if "\t" in line:
+            key, _, value = line.partition("\t")
+        else:
+            # Fallback: first word is the key, rest is value
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            key, value = parts[0], parts[1]
+
+        key = key.strip().upper()
+        value = value.strip()
+
+        if key == "PHONE":
+            # Extract digits – accept 10-digit Indian mobile numbers
+            phone_digits = re.sub(r"[^\d]", "", value)
+            if len(phone_digits) >= 10:
+                phone_digits = phone_digits[-10:]  # last 10 digits
+            result["phone"] = phone_digits if phone_digits and phone_digits != "UNKNOWN" else ""
+            # Handle literal UNKNOWN
+            if "UNKNOWN" in value.upper():
+                result["phone"] = ""
+
+        elif key == "NAME":
+            if "UNKNOWN" in value.upper():
+                continue
+            # Parse "Hindi (English)" pattern
+            paren_match = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", value)
+            if paren_match:
+                result["name"] = paren_match.group(1).strip()
+                result["name_en"] = paren_match.group(2).strip()
+            else:
+                result["name"] = value
+                result["name_en"] = ""
+
+        elif key == "DATE":
+            if "UNKNOWN" in value.upper():
+                continue
+            result["date"] = value
+
+    return result
+
+
+def extract_all_from_page(page_no: int, ocr_text: str) -> Tuple[Dict, List[OrderLine]]:
+    """
+    Extract both customer info and order lines from a single page's OCR text.
+
+    This is the unified entry point that handles the new header format while
+    preserving full backward compatibility (text without headers still works).
+
+    Returns:
+        (customer_info_dict, list_of_OrderLine)
+    """
+    customer_info = extract_customer_info(ocr_text)
+    _, body = _split_header_and_body(ocr_text)
+    lines = extract_lines_from_page(page_no, body)
+    return customer_info, lines
+
+
 def extract_lines_from_pages(pages: List[Dict]) -> List[Dict]:
     """
     High-level helper: given a list of pages:
@@ -231,5 +341,33 @@ def extract_lines_from_pages(pages: List[Dict]) -> List[Dict]:
         for line in extract_lines_from_page(page_no, text):
             results.append(line.to_dict())
     return results
+
+
+def extract_all_from_pages(pages: List[Dict]) -> Tuple[Dict, List[Dict]]:
+    """
+    High-level helper that extracts both customer info and order lines from
+    all pages. Customer info is merged: first page with non-empty values wins
+    for each field.
+
+    Returns:
+        (merged_customer_info, flat_list_of_line_dicts)
+    """
+    merged_customer: Dict = {"phone": "", "name": "", "name_en": "", "date": ""}
+    all_lines: List[Dict] = []
+
+    for page in pages:
+        page_no = int(page.get("page_no", 1))
+        text = page.get("text", "") or ""
+        customer_info, lines = extract_all_from_page(page_no, text)
+
+        # Merge: first non-empty value wins for each field
+        for key in ("phone", "name", "name_en", "date"):
+            if not merged_customer[key] and customer_info.get(key):
+                merged_customer[key] = customer_info[key]
+
+        for line in lines:
+            all_lines.append(line.to_dict())
+
+    return merged_customer, all_lines
 
 

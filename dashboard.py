@@ -243,73 +243,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .info-label { color: #64748b; }
   .info-value { color: #e2e8f0; font-weight: 500; font-family: monospace; }
 
-  .sheet-card {
-    background: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 12px;
-    overflow: hidden;
-    margin-bottom: 20px;
-  }
-  .sheet-card .panel-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .sheet-card .panel-header a {
-    color: #60a5fa;
-    font-size: 12px;
-    text-decoration: none;
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-  .sheet-card .panel-header a:hover { text-decoration: underline; }
-  .sheet-iframe-wrap {
-    position: relative;
-    width: 100%;
-    height: 420px;
-    background: #111827;
-  }
-  .sheet-iframe-wrap iframe {
-    width: 100%;
-    height: 100%;
-    border: none;
-  }
-  .sheet-placeholder {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: #475569;
-    gap: 12px;
-  }
-  .sheet-placeholder svg { opacity: 0.3; }
-  .sheet-placeholder p { font-size: 13px; text-align: center; max-width: 360px; line-height: 1.5; }
-  .sheet-placeholder code {
-    background: #334155;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    color: #94a3b8;
-  }
-  .sheet-tabs {
-    display: flex;
-    gap: 0;
-    border-bottom: 1px solid #334155;
-    background: #111827;
-  }
-  .sheet-tab {
-    padding: 8px 18px;
-    font-size: 12px;
-    color: #64748b;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    transition: all 0.15s;
-  }
-  .sheet-tab:hover { color: #94a3b8; }
-  .sheet-tab.active { color: #60a5fa; border-bottom-color: #60a5fa; }
-
   .refresh-note {
     text-align: center;
     color: #475569;
@@ -356,36 +289,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="stat-card green">
         <div class="stat-value" id="grandTotalValue">0.00</div>
         <div class="stat-label">Total Order Value</div>
-      </div>
-    </div>
-
-    <div class="sheet-card" id="sheetCard">
-      <div class="panel-header">
-        <span>Google Sheet &mdash; Live View</span>
-        <a id="sheetOpenLink" href="#" target="_blank">Open in Google Sheets &rarr;</a>
-      </div>
-      <div class="sheet-tabs" id="sheetTabs">
-        <div class="sheet-tab active" data-sheet="Raw_OCR">Raw OCR</div>
-        <div class="sheet-tab" data-sheet="Normalized_Lines">Normalized</div>
-        <div class="sheet-tab" data-sheet="Matched_Lines">Matched</div>
-        <div class="sheet-tab" data-sheet="Errors">Errors</div>
-      </div>
-      <div class="sheet-iframe-wrap" id="sheetWrap">
-        <div class="sheet-placeholder" id="sheetPlaceholder">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-          <p id="sheetMsg">Enter your <code>ORDER_UPLOAD_SHEET_ID</code> in the field below to see the live Google Sheet.</p>
-          <div style="display:flex; gap:8px; align-items:center;">
-            <input id="sheetIdInput" type="text" placeholder="Paste Google Sheet ID here..."
-              style="background:#1e293b; border:1px solid #475569; color:#e2e8f0; padding:8px 14px;
-                     border-radius:6px; font-size:13px; width:340px; font-family:monospace;"
-            />
-            <button onclick="applySheetId()" style="background:#2563eb; color:#fff; border:none;
-              padding:8px 16px; border-radius:6px; font-size:13px; cursor:pointer; font-weight:600;">
-              Load
-            </button>
-          </div>
-        </div>
-        <iframe id="sheetFrame" style="display:none;" loading="lazy"></iframe>
       </div>
     </div>
 
@@ -438,83 +341,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Recent PDFs section -->
+    <div class="panel" style="margin-top: 20px;">
+      <div class="panel-header">Recent Order PDFs</div>
+      <div class="panel-body" id="pdfList">
+        <div style="color: #475569; text-align: center; padding: 20px;">
+          No PDFs generated yet...
+        </div>
+      </div>
+    </div>
+
     <div class="refresh-note">Auto-refreshes every 2 seconds</div>
   </div>
 
   <script>
-    // ---- Google Sheet embed logic ----
-    let currentSheetId = localStorage.getItem('dashboard_sheet_id') || '';
-    let currentTab = 'Raw_OCR';
-
-    function buildSheetUrl(sheetId, tab) {
-      // Google Sheets publish embed URL with specific sheet
-      return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:html&sheet=${encodeURIComponent(tab)}`;
-    }
-
-    function loadSheet(sheetId, tab) {
-      const frame = document.getElementById('sheetFrame');
-      const placeholder = document.getElementById('sheetPlaceholder');
-      const openLink = document.getElementById('sheetOpenLink');
-
-      if (!sheetId) {
-        frame.style.display = 'none';
-        placeholder.style.display = 'flex';
-        return;
-      }
-
-      placeholder.style.display = 'none';
-      frame.style.display = 'block';
-      frame.src = buildSheetUrl(sheetId, tab);
-      openLink.href = `https://docs.google.com/spreadsheets/d/${sheetId}`;
-    }
-
-    function applySheetId() {
-      const input = document.getElementById('sheetIdInput');
-      let val = input.value.trim();
-
-      // Accept full URL or just the ID
-      const urlMatch = val.match(/spreadsheets\\/d\\/([a-zA-Z0-9_-]+)/);
-      if (urlMatch) val = urlMatch[1];
-
-      if (val) {
-        currentSheetId = val;
-        localStorage.setItem('dashboard_sheet_id', val);
-        loadSheet(val, currentTab);
-      }
-    }
-
-    // Tab switching
-    document.getElementById('sheetTabs').addEventListener('click', function(e) {
-      const tab = e.target.closest('.sheet-tab');
-      if (!tab) return;
-      document.querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      currentTab = tab.dataset.sheet;
-      if (currentSheetId) loadSheet(currentSheetId, currentTab);
-    });
-
-    // On page load, restore saved sheet
-    if (currentSheetId) {
-      document.getElementById('sheetIdInput').value = currentSheetId;
-      loadSheet(currentSheetId, currentTab);
-    }
-
-    // Also check stats for sheet_id from bot
-    async function checkSheetFromStats() {
-      try {
-        const resp = await fetch('/api/stats?' + Date.now());
-        if (!resp.ok) return;
-        const s = await resp.json();
-        if (s.sheet_id && !currentSheetId) {
-          currentSheetId = s.sheet_id;
-          localStorage.setItem('dashboard_sheet_id', s.sheet_id);
-          document.getElementById('sheetIdInput').value = s.sheet_id;
-          loadSheet(s.sheet_id, currentTab);
-        }
-      } catch(e) {}
-    }
-    checkSheetFromStats();
-
     // ---- Stats polling ----
     async function refreshStats() {
       try {
@@ -563,8 +403,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    async function refreshPdfs() {
+      try {
+        const resp = await fetch('/api/pdfs?' + Date.now());
+        if (!resp.ok) return;
+        const pdfs = await resp.json();
+        const el = document.getElementById('pdfList');
+        if (pdfs.length === 0) {
+          el.innerHTML = '<div style="color:#475569;text-align:center;padding:20px;">No PDFs generated yet...</div>';
+        } else {
+          el.innerHTML = pdfs.map(p => `
+            <div class="event-row" style="align-items:center;">
+              <span class="event-time">${p.modified.split(' ')[1]}</span>
+              <a href="${p.url}" target="_blank" style="color:#60a5fa;text-decoration:none;flex:1;margin-left:8px;">
+                ${p.name}
+              </a>
+              <span style="color:#64748b;font-size:12px;margin-left:8px;">
+                ${(p.size / 1024).toFixed(1)} KB
+              </span>
+              <a href="${p.url}" download style="color:#34d399;margin-left:12px;font-size:12px;text-decoration:none;">
+                Download
+              </a>
+            </div>
+          `).join('');
+        }
+      } catch (err) {}
+    }
+
     setInterval(refreshStats, 2000);
+    setInterval(refreshPdfs, 5000);
     refreshStats();
+    refreshPdfs();
   </script>
 </body>
 </html>"""
@@ -590,6 +459,41 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(json.dumps(stats).encode("utf-8"))
+        elif self.path.startswith("/api/pdfs"):
+            # List available PDFs in the temp folder
+            pdf_dir = PROJECT_ROOT / "temp"
+            pdfs = []
+            if pdf_dir.exists():
+                for f in sorted(pdf_dir.glob("order_*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True):
+                    pdfs.append({
+                        "name": f.name,
+                        "size": f.stat().st_size,
+                        "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                        "url": f"/pdf/{f.name}",
+                    })
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(json.dumps(pdfs).encode("utf-8"))
+        elif self.path.startswith("/pdf/"):
+            # Serve a PDF file from the temp folder
+            filename = self.path[5:]  # strip "/pdf/"
+            # Security: only allow simple filenames (no path traversal)
+            if "/" in filename or "\\" in filename or ".." in filename:
+                self.send_error(403, "Forbidden")
+                return
+            pdf_path = PROJECT_ROOT / "temp" / filename
+            if pdf_path.exists() and pdf_path.suffix == ".pdf":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition", f"inline; filename=\"{filename}\"")
+                self.send_header("Content-Length", str(pdf_path.stat().st_size))
+                self.end_headers()
+                with open(pdf_path, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "PDF not found")
         else:
             self.send_error(404)
 

@@ -35,9 +35,11 @@ from telegram.ext import (
 try:
     from src import config
     from src.order_upload_orchestrator import OrderUploadOrchestrator
+    from src.order_upload_image import generate_order_image
 except ImportError:
     import config
     from order_upload_orchestrator import OrderUploadOrchestrator
+    from order_upload_image import generate_order_image
 
 
 DEV_PREFIX: Final[str] = "[DEV BOT] "
@@ -280,19 +282,60 @@ class DevGSTScannerBot:
             reply_markup=self._post_process_keyboard(),
         )
 
-        # Send the PDF if generated
+        # Send the order summary (PDF or image)
         pdf_path = result.get("pdf_path")
+        chat_id = update.effective_chat.id
+        delivered = False
+
+        # Strategy 1: Try sending PDF directly via Telegram sendDocument
         if pdf_path and os.path.exists(pdf_path):
             try:
                 with open(pdf_path, "rb") as pdf_file:
-                    await target.reply_document(
+                    await context.bot.send_document(
+                        chat_id=chat_id,
                         document=pdf_file,
                         filename=os.path.basename(pdf_path),
-                        caption="Here's your order summary PDF.",
+                        caption=f"{DEV_PREFIX}Here's your order summary PDF.",
                     )
-                _dash_event("info", "PDF sent to user")
+                delivered = True
+                _dash_event("info", "PDF sent via Telegram")
             except Exception as e:
-                print(f"{DEV_PREFIX}Failed to send PDF: {e}")
+                print(f"{DEV_PREFIX}sendDocument blocked (firewall): {e}")
+
+        # Strategy 2: Render as image and send via sendPhoto (bypasses IPS)
+        if not delivered:
+            try:
+                # Get the matched lines and totals from the orchestrator result
+                img_path = generate_order_image(
+                    matched_lines=result.get("_matched_lines", []),
+                    grand_total=stats.get("grand_total", 0),
+                    order_id=session.get("order_id"),
+                    customer_info=result.get("customer_info"),
+                )
+                with open(img_path, "rb") as img_file:
+                    await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=img_file,
+                        caption=f"{DEV_PREFIX}Order summary (image). PDF also saved locally.",
+                    )
+                delivered = True
+                _dash_event("info", "Invoice image sent via sendPhoto")
+            except Exception as e:
+                print(f"{DEV_PREFIX}sendPhoto fallback failed: {e}")
+                _dash_event("error", f"sendPhoto failed: {e}")
+
+        # Strategy 3: Last resort — tell user where the PDF is locally
+        if not delivered:
+            dashboard_port = getattr(config, "DASHBOARD_PORT", 8050)
+            pdf_filename = os.path.basename(pdf_path) if pdf_path else "unknown"
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"{DEV_PREFIX}Could not send the file. PDF saved locally:\n"
+                    f"http://localhost:{dashboard_port}/pdf/{pdf_filename}\n"
+                    f"Or: {pdf_path}"
+                ),
+            )
         
         # Clear session
         del self.user_sessions[user_id]
@@ -421,20 +464,65 @@ class DevGSTScannerBot:
             )
 
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle document uploads (PDFs, etc.) during order session."""
+        """Handle document uploads — accept images sent as files, reject others."""
+        _dash_update("total_messages")
         user_id = update.effective_user.id
         session = self.user_sessions.get(user_id)
-        
-        if not session:
+        doc = update.message.document
+
+        # Check if the document is an image (by MIME type or file extension)
+        is_image = False
+        if doc and doc.mime_type and doc.mime_type.startswith("image/"):
+            is_image = True
+        elif doc and doc.file_name:
+            ext = doc.file_name.lower().rsplit(".", 1)[-1] if "." in doc.file_name else ""
+            is_image = ext in ("jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif")
+
+        if not is_image:
             await update.message.reply_text(
-                f"{DEV_PREFIX}File received, but no active order session.\n"
-                "Use /order_upload to start a session first."
+                f"{DEV_PREFIX}This file type is not supported. Please send images only.\n"
+                "Tip: You can send photos directly or as image files (JPG, PNG)."
             )
             return
-        
-        await update.message.reply_text(
-            f"{DEV_PREFIX}Document files are not yet supported. Please send images only."
-        )
+
+        if not session:
+            await update.message.reply_text(
+                f"{DEV_PREFIX}Image file received, but no active order session.\n"
+                "Tap 'Upload Order' to start a session first.",
+                reply_markup=self._main_menu_keyboard(),
+            )
+            return
+
+        # Download the image file
+        try:
+            _dash_update("total_images_received")
+            _dash_event("image", f"Image file: {doc.file_name or 'unnamed'}")
+
+            file = await context.bot.get_file(doc.file_id)
+
+            temp_folder = config.TEMP_FOLDER or "temp"
+            os.makedirs(temp_folder, exist_ok=True)
+
+            # Preserve original extension, default to .jpg
+            ext = ".jpg"
+            if doc.file_name and "." in doc.file_name:
+                ext = "." + doc.file_name.rsplit(".", 1)[-1].lower()
+            file_path = os.path.join(temp_folder, f"{doc.file_id}{ext}")
+            await file.download_to_drive(file_path)
+
+            session["images"].append(file_path)
+
+            await update.message.reply_text(
+                f"{DEV_PREFIX}Image {len(session['images'])} received! ({doc.file_name or 'image'})\n"
+                "Send more images, or tap a button below:",
+                reply_markup=self._session_keyboard(len(session["images"])),
+            )
+        except Exception as e:
+            _dash_update("errors")
+            _dash_event("error", f"Doc image download failed: {str(e)[:60]}")
+            await update.message.reply_text(
+                f"{DEV_PREFIX}Failed to download image file: {str(e)}"
+            )
 
     def run(self) -> None:
         """
@@ -444,9 +532,34 @@ class DevGSTScannerBot:
         - Uses TELEGRAM_DEV_BOT_TOKEN exclusively
         - Does not import or touch production GSTScannerBot
         """
+        import ssl
+        from telegram.request import HTTPXRequest
+
+        # Build SSL context from Windows/OS certificate store so the bot
+        # works behind corporate proxies that inject their own CA certs.
+        ssl_context = ssl.create_default_context()
+        ssl_context.load_default_certs()
+
+        # Also load our exported CA bundle if it exists
+        ca_bundle = os.environ.get("SSL_CERT_FILE", "")
+        if ca_bundle and os.path.exists(ca_bundle):
+            ssl_context.load_verify_locations(ca_bundle)
+
+        # Create custom HTTPXRequest that uses the OS cert store
+        custom_request = HTTPXRequest(
+            http_version="1.1",
+            httpx_kwargs={"verify": ssl_context},
+        )
+        custom_get_updates_request = HTTPXRequest(
+            http_version="1.1",
+            httpx_kwargs={"verify": ssl_context},
+        )
+
         application = (
             Application.builder()
             .token(config.TELEGRAM_DEV_BOT_TOKEN)
+            .request(custom_request)
+            .get_updates_request(custom_get_updates_request)
             .build()
         )
 

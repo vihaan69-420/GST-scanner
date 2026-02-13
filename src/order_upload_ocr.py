@@ -33,7 +33,21 @@ CONTEXT: These are orders for SAI-ABS brand aftermarket parts. Common product ty
 - Various two-wheeler models: Activa, Shine, Jupiter, Splendor, Passion/Pass, 
   Access, Pleasure, Dream Neo/Yuga, Maestro, Duet, i-Smart, XPro, Pulsar, etc.
 
-INSTRUCTIONS:
+HEADER EXTRACTION:
+The top of the page usually has a HEADER with customer details. Extract them FIRST:
+- Phone number (usually on the left side, a 10-digit Indian mobile number)
+- Customer name (usually in the center, often written in Hindi/Devanagari script)
+- Date (usually on the right side, e.g. 13/12/25)
+
+Output the header as the FIRST 3 lines, followed by a separator line "---":
+PHONE[TAB]<10-digit phone number, or UNKNOWN if not visible>
+NAME[TAB]<Hindi name in Devanagari script> (<English transliteration>) or UNKNOWN
+DATE[TAB]<date exactly as written, e.g. 13/12/25, or UNKNOWN if not visible>
+---
+
+Then output the line items below.
+
+INSTRUCTIONS FOR LINE ITEMS:
 1. Read each handwritten line from top to bottom.
 2. For each order line, output:
    S.N | Full Part Description | Quantity (from circled number)
@@ -56,11 +70,16 @@ INSTRUCTIONS:
 6. The quantity is ALWAYS the circled number at the end of each item/color.
 7. Numbers that are part of model names (like "110" in "iSmart 110", "125" in "Activa 125",
    "3G" in "Activa 3G", "5G" in "Activa 5G") are NOT quantities.
+8. Blank or incomplete lines (e.g. just ditto marks with no product info) should be SKIPPED entirely.
 
 OUTPUT FORMAT (tab-separated, one line per item):
 S.N[TAB]Part Description[TAB]Quantity
 
-Example output:
+FULL EXAMPLE OUTPUT:
+PHONE	7427096261
+NAME	राम कुमार (Ram Kumar)
+DATE	13/12/25
+---
 1	Body Kit Fit For Stereo Black/Grey	2
 2	Visor Fit For Activa 3G Blue	5
 3	Visor Fit For iSmart 110 Blue	5
