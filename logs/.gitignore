@@ -1,9 +1,0 @@
-# Ignore all log files
-*.log
-*.log.*
-
-# Ignore metrics data
-metrics.json
-
-# But keep the directory structure
-!.gitignore
