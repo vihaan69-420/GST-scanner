@@ -172,7 +172,7 @@ class TenantManager:
             config.DEFAULT_SUBSCRIPTION_TIER,  # L: Subscription_Plan (Epic 3)
         ]
 
-        self.worksheet.append_row(new_row, value_input_option='USER_ENTERED')
+        self.worksheet.append_row(new_row, value_input_option='USER_ENTERED', insert_data_option='INSERT_ROWS', table_range='A1')
 
         # Update cache with the new row number
         all_values = self.worksheet.get_all_values()

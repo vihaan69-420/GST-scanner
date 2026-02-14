@@ -693,7 +693,7 @@ class GSTScannerBot:
                 )
             else:
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order")]
+                    [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload")]
                 ])
                 await query.edit_message_text(
                     "No order in progress.\n\nTap below to start one!",
@@ -839,7 +839,7 @@ class GSTScannerBot:
             upload_keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
-                    InlineKeyboardButton("📦 Sales Order", callback_data="menu_order"),
+                    InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"),
                 ],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
             ])
@@ -857,28 +857,6 @@ class GSTScannerBot:
                 "Multi-page? Just send all pages one by one.\n\n"
                 "I'll wait for all your images before processing."
             )
-            return
-        
-        elif callback_data == "menu_order":
-            if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
-                from order_normalization import OrderSession
-                # Cancel any existing sessions
-                if user_id in self.user_sessions:
-                    del self.user_sessions[user_id]
-                order_session = OrderSession(user_id, update.effective_user.username)
-                self.order_sessions[user_id] = order_session
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
-                ])
-                await query.edit_message_text(
-                    "📦 Order mode — ready!\n\n"
-                    "Send me photos of your handwritten order notes.\n"
-                    "Multiple pages? No problem — send them all.\n\n"
-                    "When you're done, tap ✅ Submit Order.",
-                    reply_markup=keyboard
-                )
-            else:
-                await query.edit_message_text("Order upload isn't available yet. Contact your admin to enable it.")
             return
         
         elif callback_data == "menu_help":
@@ -2121,7 +2099,7 @@ Tap 📋 Reports for detailed analysis"""
             [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
         ])
         await update.message.reply_text(
-            "📦 Order mode — ready!\n\n"
+            "📦 Sales Order upload\n\n"
             "Send me photos of your handwritten order notes.\n"
             "Multiple pages? No problem — send them all.\n\n"
             "When you're done, tap ✅ Submit Order.\n"
@@ -2141,7 +2119,7 @@ Tap 📋 Reports for detailed analysis"""
         msg = update.effective_message
         if user_id not in self.order_sessions:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order")],
+                [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
@@ -2185,7 +2163,7 @@ Tap 📋 Reports for detailed analysis"""
         """Process submitted order with the chosen output format (pdf or csv)"""
         if user_id not in self.order_sessions:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order")],
+                [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
             ])
             await update.effective_message.reply_text(
@@ -2241,7 +2219,7 @@ Tap 📋 Reports for detailed analysis"""
         except Exception as e:
             print(f"[ERROR] Order processing failed: {e}")
             order_error_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Try Again", callback_data="menu_order")],
+                [InlineKeyboardButton("🔄 Try Again", callback_data="menu_order_upload")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
             ])
             await update.effective_message.reply_text(
@@ -2724,7 +2702,7 @@ Tap 📋 Reports for detailed analysis"""
         default_keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
-                InlineKeyboardButton("📦 Sales Order", callback_data="menu_order"),
+                InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"),
             ],
             [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
         ])
