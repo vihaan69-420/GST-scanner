@@ -282,20 +282,10 @@ class GSTScannerBot:
             f"Hey {user.first_name}! 👋\n"
             f"Welcome to GST Scanner Bot.\n"
             f"\n"
-            f"I turn invoice photos into organized Google Sheets "
-            f"data — automatically.\n"
+            f"📸 Purchase Orders — snap & organize\n"
+            f"📦 Sales Orders — handwritten to digital\n"
             f"\n"
-            f"─────────────────────\n"
-            f"Here's what I can do for you:\n"
-            f"\n"
-            f"  📸  Purchase Order\n"
-            f"  ✅  Validate GST numbers & math\n"
-            f"  📊  Save to Google Sheets instantly\n"
-            f"  📄  Generate GSTR-1 & GSTR-3B reports\n"
-            f"  📦  Process handwritten orders too\n"
-            f"─────────────────────\n"
-            f"\n"
-            f"Ready? Pick an option below to get started!"
+            f"Tap below to get started!"
         )
         
         # Check tenant registration
@@ -422,22 +412,14 @@ class GSTScannerBot:
     
     def create_main_menu_keyboard(self):
         """Create main menu with inline buttons"""
-        keyboard = [
-            [InlineKeyboardButton("📸 Purchase Order", callback_data="menu_upload")],
-        ]
-        
         # ═══════════════════════════════════════════════════════
-        # Epic 2: Conditional Order Upload button (Feature-Flagged)
+        # Purchase Order + Sales Order side by side
         # ═══════════════════════════════════════════════════════
+        row = [InlineKeyboardButton("📸 Purchase Order", callback_data="menu_upload")]
         if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
-            keyboard.append([InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload")])
+            row.append(InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"))
+        keyboard = [row]
         # ═══════════════════════════════════════════════════════
-        
-        keyboard.extend([
-            [InlineKeyboardButton("📊 Reports & Exports", callback_data="menu_generate")],
-            [InlineKeyboardButton("📈 Usage & Stats", callback_data="menu_usage")],
-            [InlineKeyboardButton("❓ Help", callback_data="menu_help")],
-        ])
         return InlineKeyboardMarkup(keyboard)
 
     def create_upload_submenu(self):
