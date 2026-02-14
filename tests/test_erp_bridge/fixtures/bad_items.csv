@@ -1,0 +1,2 @@
+Invoice_No,Line_No,Item_Description,HSN_SAC,Qty,UOM,Rate,Discount_Percent,Taxable_Value,GST_Rate,CGST_Rate,CGST_Amount,SGST_Rate,SGST_Amount,IGST_Rate,IGST_Amount,Cess_Amount,Stock_Item_Name,Godown
+INV-BAD-001,one,Widget,123,abc,INVALID,xyz,0.00,10000.00,15,9,450.00,9,450.00,0,0.00,0.00,,

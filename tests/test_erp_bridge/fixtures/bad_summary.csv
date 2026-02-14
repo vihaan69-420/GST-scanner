@@ -1,0 +1,2 @@
+Voucher_Type,Invoice_No,Invoice_Date,Party_Name,Party_GSTIN,Party_State_Code,Place_Of_Supply,Sales_Ledger,Invoice_Value,Total_Taxable_Value,CGST_Total,SGST_Total,IGST_Total,Cess_Total,Round_Off,Narration,Reference_No,Reference_Date,Reverse_Charge,Company_Name
+InvalidType,INV-BAD-001,2026-02-14,Missing Things,29AABCU960,99,29,Sales,11800.00,10000.00,900.00,900.00,0.00,0.00,0.00,,,,X,
