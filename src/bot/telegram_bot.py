@@ -67,7 +67,7 @@ async def setup_bot_commands(application):
     """
     commands = [
         BotCommand("start", "Start bot & show main menu"),
-        BotCommand("upload", "Upload GST invoice"),
+        BotCommand("upload", "Purchase Order"),
         BotCommand("generate", "Generate GST reports"),
         BotCommand("cancel", "Cancel current operation"),
         BotCommand("help", "Help & guide"),
@@ -75,7 +75,7 @@ async def setup_bot_commands(application):
     
     # Add Epic 2 commands if feature enabled (only primary action, not derived ones)
     if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
-        commands.insert(2, BotCommand("order_upload", "Start order upload session"))
+        commands.insert(2, BotCommand("order_upload", "Sales Order"))
     
     # Epic 3: Subscribe command (always available)
     commands.append(BotCommand("subscribe", "Manage subscription plan"))
@@ -288,7 +288,7 @@ class GSTScannerBot:
             f"─────────────────────\n"
             f"Here's what I can do for you:\n"
             f"\n"
-            f"  📸  Scan invoices from photos\n"
+            f"  📸  Purchase Order\n"
             f"  ✅  Validate GST numbers & math\n"
             f"  📊  Save to Google Sheets instantly\n"
             f"  📄  Generate GSTR-1 & GSTR-3B reports\n"
@@ -423,14 +423,14 @@ class GSTScannerBot:
     def create_main_menu_keyboard(self):
         """Create main menu with inline buttons"""
         keyboard = [
-            [InlineKeyboardButton("📸 Scan Invoice", callback_data="menu_upload")],
+            [InlineKeyboardButton("📸 Purchase Order", callback_data="menu_upload")],
         ]
         
         # ═══════════════════════════════════════════════════════
         # Epic 2: Conditional Order Upload button (Feature-Flagged)
         # ═══════════════════════════════════════════════════════
         if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
-            keyboard.append([InlineKeyboardButton("📦 Upload Order", callback_data="menu_order_upload")])
+            keyboard.append([InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload")])
         # ═══════════════════════════════════════════════════════
         
         keyboard.extend([
@@ -505,7 +505,7 @@ class GSTScannerBot:
             "─────────────────────\n"
             "📦 HANDWRITTEN ORDERS\n"
             "─────────────────────\n"
-            "1. Tap Upload Order from the menu\n"
+            "1. Tap Sales Order from the menu\n"
             "2. Send photos of order notes\n"
             "3. Tap Submit Order for PDF generation\n"
             "\n"
@@ -662,7 +662,7 @@ class GSTScannerBot:
                 [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
             ])
             await query.edit_message_text(
-                "📦 Upload Order (Handwritten Notes)\n\n"
+                "📦 Sales Order (Handwritten Notes)\n\n"
                 "✅ Ready to receive order pages!\n\n"
                 "📌 INSTRUCTIONS\n"
                 "1. Send me photos of handwritten order notes\n"
@@ -711,7 +711,7 @@ class GSTScannerBot:
                 )
             else:
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📦 Upload Order", callback_data="menu_order")]
+                    [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order")]
                 ])
                 await query.edit_message_text(
                     "No order in progress.\n\nTap below to start one!",
@@ -857,7 +857,7 @@ class GSTScannerBot:
             upload_keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
-                    InlineKeyboardButton("📦 Upload Order", callback_data="menu_order"),
+                    InlineKeyboardButton("📦 Sales Order", callback_data="menu_order"),
                 ],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
             ])
@@ -903,7 +903,7 @@ class GSTScannerBot:
             await query.edit_message_text(
                 "Need a hand? Here's a quick overview:\n\n"
                 "📸 Upload Invoice — Send photos, I extract GST data\n"
-                "📦 Upload Order — Send handwritten orders for PDF\n"
+                "📦 Sales Order — Send handwritten orders for PDF\n"
                 "📊 Generate — GSTR-1, GSTR-3B, reports & stats\n\n"
                 "The fastest way to start? Just send me a photo!",
                 reply_markup=self.create_main_menu_keyboard()
@@ -2159,14 +2159,14 @@ Tap 📋 Reports for detailed analysis"""
         msg = update.effective_message
         if user_id not in self.order_sessions:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Upload Order", callback_data="menu_order")],
+                [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
                 "❌ No Active Order Session\n\n"
                 "You need to start an order upload session first!\n\n"
                 "📌 HOW TO UPLOAD AN ORDER\n"
-                "1. Tap 📦 Upload Order below\n"
+                "1. Tap 📦 Sales Order below\n"
                 "2. Send your order photos\n"
                 "3. Tap ✅ Submit Order\n\n"
                 "Note: Invoice upload is different from order upload.",
@@ -2203,7 +2203,7 @@ Tap 📋 Reports for detailed analysis"""
         """Process submitted order with the chosen output format (pdf or csv)"""
         if user_id not in self.order_sessions:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Upload Order", callback_data="menu_order")],
+                [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
             ])
             await update.effective_message.reply_text(
@@ -2742,7 +2742,7 @@ Tap 📋 Reports for detailed analysis"""
         default_keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
-                InlineKeyboardButton("📦 Upload Order", callback_data="menu_order"),
+                InlineKeyboardButton("📦 Sales Order", callback_data="menu_order"),
             ],
             [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
         ])
