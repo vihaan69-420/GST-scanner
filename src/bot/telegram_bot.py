@@ -2780,7 +2780,35 @@ Tap 📋 Reports for detailed analysis"""
         print(f"Temp folder: {config.TEMP_FOLDER}")
         print("="*80)
         
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        # Cloud Run: Add startup delay to let any lingering old container instances
+        # fully terminate before this instance starts polling Telegram.
+        import time
+        startup_delay = int(os.getenv('BOT_STARTUP_DELAY', '0'))
+        if startup_delay > 0:
+            print(f"[STARTUP] Waiting {startup_delay}s for old instances to terminate...")
+            time.sleep(startup_delay)
+
+        # Retry loop: python-telegram-bot does not retry on Conflict errors
+        # (only on network errors). On Cloud Run, revision transitions cause
+        # brief periods where two bot instances poll simultaneously, which
+        # triggers Conflict. We wrap run_polling in a retry loop so the bot
+        # recovers automatically.
+        max_retries = int(os.getenv('BOT_POLLING_RETRIES', '5'))
+        for attempt in range(1, max_retries + 1):
+            try:
+                application.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,
+                )
+                break  # Clean exit (e.g. SIGTERM) — don't retry
+            except Exception as poll_err:
+                err_str = str(poll_err).lower()
+                if 'conflict' in err_str and attempt < max_retries:
+                    wait = min(10 * attempt, 30)
+                    print(f"[RETRY] Polling conflict (attempt {attempt}/{max_retries}), retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                raise  # Non-conflict error or retries exhausted
 
 
 def main():

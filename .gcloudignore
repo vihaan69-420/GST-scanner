@@ -24,6 +24,11 @@ __pycache__/
 .cursor/
 .git/
 
+# Ignore Node.js / Next.js build artifacts
+node_modules/
+.next/
+package-lock.json
+
 # Ignore media files
 *.jpg
 *.png
