@@ -81,6 +81,7 @@ class CorrectionManager:
         invoice_no = invoice_data.get('Invoice_No', 'N/A')
         invoice_date = invoice_data.get('Invoice_Date', 'N/A')
         seller_name = invoice_data.get('Seller_Name', 'N/A')
+        seller_gstin = invoice_data.get('Seller_GSTIN', 'N/A')
         buyer_name = invoice_data.get('Buyer_Name', 'N/A')
         buyer_gstin = invoice_data.get('Buyer_GSTIN', 'N/A')
         total_taxable = invoice_data.get('Total_Taxable_Value', 'N/A')
@@ -91,6 +92,7 @@ class CorrectionManager:
         message += f"  Invoice No:   {invoice_no}\n"
         message += f"  Date:         {invoice_date}\n"
         message += f"  Seller:       {seller_name}\n"
+        message += f"  Seller GSTIN: {seller_gstin}\n"
         message += f"  Buyer:        {buyer_name}\n"
         message += f"  Buyer GSTIN:  {buyer_gstin}\n"
         message += f"  Taxable:      Rs.{total_taxable}\n"

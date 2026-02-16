@@ -45,7 +45,7 @@ src/logs/
 # ═══════════════════════════════════════════
 temp/
 temp_invoices/
-exports/
+/exports/
 orders/
 data/*.db
 data/*.db-wal

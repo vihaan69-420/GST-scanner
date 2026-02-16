@@ -175,6 +175,8 @@ ENABLE_MANUAL_CORRECTIONS = os.getenv('ENABLE_MANUAL_CORRECTIONS', 'true').lower
 ENABLE_DEDUPLICATION = os.getenv('ENABLE_DEDUPLICATION', 'true').lower() == 'true'
 ENABLE_AUDIT_LOGGING = os.getenv('ENABLE_AUDIT_LOGGING', 'false').lower() == 'true'
 EXTRACTION_VERSION = os.getenv('EXTRACTION_VERSION', 'v1.0-tier2')
+BOT_VERSION = os.getenv('BOT_VERSION', '2.2.0')
+BOT_BUILD_NAME = os.getenv('BOT_BUILD_NAME', 'local-dev')
 CONFIDENCE_THRESHOLD_REVIEW = float(os.getenv('CONFIDENCE_THRESHOLD_REVIEW', '0.7'))
 
 # Monitoring Configuration

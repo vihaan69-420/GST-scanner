@@ -498,7 +498,10 @@ class GSTScannerBot:
             "• Keep images clear and focused\n"
             "• Send all pages from the same document\n"
             "\n"
-            "Questions? Contact your administrator."
+            "Questions? Contact your administrator.\n"
+            "\n"
+            "─────────────────────\n"
+            f"🔧 v{config.BOT_VERSION} | {config.BOT_BUILD_NAME}"
         )
         
         await update.message.reply_text(
@@ -734,8 +737,8 @@ class GSTScannerBot:
                 )
             return
         
-        elif callback_data == "btn_confirm":
-            # Save invoice as-is (from review screen)
+        elif callback_data == "btn_save_sheets":
+            # Save invoice to Google Sheets (from review screen)
             session = self._get_user_session(user_id)
             if session['state'] != 'reviewing':
                 await query.edit_message_text(
@@ -744,12 +747,104 @@ class GSTScannerBot:
                     reply_markup=self.create_main_menu_keyboard()
                 )
                 return
-            # Keep the extracted details visible — append saving status and remove buttons
-            current_text = query.message.text or ""
-            await query.edit_message_text(
-                current_text + "\n\n💾 Saving to Google Sheets..."
-            )
+            await query.edit_message_text("💾 Saving to Google Sheets...")
             await self._save_invoice_to_sheets(update, user_id, session)
+            return
+        
+        elif callback_data == "btn_download_csv":
+            # Download CSV (from review screen)
+            session = self._get_user_session(user_id)
+            if session['state'] != 'reviewing':
+                await query.edit_message_text(
+                    "No invoice waiting for confirmation.\n\n"
+                    "Start a new one?",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            await query.edit_message_text("⏳ Generating CSV files...")
+            try:
+                from exports.invoice_csv_exporter import InvoiceCSVExporter
+                import os
+                
+                exporter = InvoiceCSVExporter()
+                invoice_data = session['data']['invoice_data']
+                line_items = session['data'].get('line_items', [])
+                invoice_no = invoice_data.get('Invoice_No', 'Invoice').replace('/', '_')
+                msg = update.effective_message
+                
+                header_path = exporter.export_header(invoice_data)
+                await msg.reply_document(
+                    document=open(header_path, 'rb'),
+                    filename=f"{invoice_no}_header.csv",
+                    caption="📊 Invoice Header CSV"
+                )
+                os.remove(header_path)
+                
+                if line_items:
+                    items_path = exporter.export_line_items(invoice_data, line_items)
+                    await msg.reply_document(
+                        document=open(items_path, 'rb'),
+                        filename=f"{invoice_no}_line_items.csv",
+                        caption=f"📋 Line Items CSV ({len(line_items)} items)"
+                    )
+                    os.remove(items_path)
+                
+                # After CSV download, offer to also save to sheets
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💾 Also Save to Sheets", callback_data="btn_save_sheets")],
+                    [InlineKeyboardButton("✅ Done", callback_data="btn_cancel")]
+                ])
+                await query.edit_message_text(
+                    "✅ CSV sent!\n\nAlso save to Google Sheets?",
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                await query.edit_message_text(f"❌ CSV export failed: {str(e)}")
+            return
+        
+        elif callback_data == "btn_save_and_csv":
+            # Save to Sheets AND download CSV (from review screen)
+            session = self._get_user_session(user_id)
+            if session['state'] != 'reviewing':
+                await query.edit_message_text(
+                    "No invoice waiting for confirmation.\n\n"
+                    "Start a new one?",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            await query.edit_message_text("⏳ Saving & generating CSV...")
+            try:
+                from exports.invoice_csv_exporter import InvoiceCSVExporter
+                import os
+                
+                exporter = InvoiceCSVExporter()
+                invoice_data = session['data']['invoice_data']
+                line_items = session['data'].get('line_items', [])
+                invoice_no = invoice_data.get('Invoice_No', 'Invoice').replace('/', '_')
+                msg = update.effective_message
+                
+                # Send CSVs first
+                header_path = exporter.export_header(invoice_data)
+                await msg.reply_document(
+                    document=open(header_path, 'rb'),
+                    filename=f"{invoice_no}_header.csv",
+                    caption="📊 Invoice Header CSV"
+                )
+                os.remove(header_path)
+                
+                if line_items:
+                    items_path = exporter.export_line_items(invoice_data, line_items)
+                    await msg.reply_document(
+                        document=open(items_path, 'rb'),
+                        filename=f"{invoice_no}_line_items.csv",
+                        caption=f"📋 Line Items CSV ({len(line_items)} items)"
+                    )
+                    os.remove(items_path)
+                
+                # Then save to sheets
+                await self._save_invoice_to_sheets(update, user_id, session)
+            except Exception as e:
+                await query.edit_message_text(f"❌ Failed: {str(e)}")
             return
         
         elif callback_data == "btn_correct":
@@ -787,12 +882,25 @@ class GSTScannerBot:
                 )
                 return
             correction_count = len(session.get('corrections', {}))
-            # Keep the correction instructions visible — append saving status and remove buttons
-            current_text = query.message.text or ""
+            # After corrections, go back to reviewing state with save options
+            session['state'] = 'reviewing'
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
+                    InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
+                ],
+                [
+                    InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
+                    InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
+                ],
+                [
+                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                ]
+            ])
             await query.edit_message_text(
-                current_text + f"\n\n💾 Applying {correction_count} correction(s) and saving..."
+                f"✅ {correction_count} correction(s) applied!\n\nWhat would you like to do?",
+                reply_markup=keyboard
             )
-            await self._save_invoice_to_sheets(update, user_id, session)
             return
         
         elif callback_data == "btn_cancel_correction":
@@ -813,11 +921,15 @@ class GSTScannerBot:
                 )
                 review_keyboard = InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("✅ Save As-Is", callback_data="btn_confirm"),
-                        InlineKeyboardButton("✏️ Make Corrections", callback_data="btn_correct"),
+                        InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
+                        InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
                     ],
                     [
-                        InlineKeyboardButton("🗑 Cancel & Resend New Images", callback_data="btn_cancel_resend"),
+                        InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
+                        InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
+                    ],
+                    [
+                        InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
                     ]
                 ])
                 await query.edit_message_text(review_msg, reply_markup=review_keyboard)
@@ -1237,14 +1349,16 @@ For Feature Requests:
 Discuss with your administrator
 
 Bot Information:
-• Version: Tier 3 (with exports)
-• Features: OCR, Validation, Batch, GSTR
+• Features: OCR, Validation, Batch, GSTR, CSV Export
 • Supported: JPG, PNG images
 
 Useful Commands:
 /start - Restart bot & show menu
 /help - Show help information
-/cancel - Cancel current operation"""
+/cancel - Cancel current operation
+
+─────────────────────
+🔧 v{version} | {build}""".format(version=config.BOT_VERSION, build=config.BOT_BUILD_NAME)
             await query.edit_message_text(
                 help_text,
                 reply_markup=self.create_help_submenu()
@@ -1333,6 +1447,8 @@ Tap 📋 Reports for detailed analysis"""
                 "Or tap below for GSTR-1 CSV exports.",
                 reply_markup=keyboard
             )
+        
+        # (CSV/Save actions are handled by btn_save_sheets, btn_download_csv, btn_save_and_csv above)
     
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /cancel command"""
@@ -1374,7 +1490,7 @@ Tap 📋 Reports for detailed analysis"""
             )
             return
         
-        # Proceed to save without corrections
+        # Save directly to sheets (text command = quick save)
         await self._save_invoice_to_sheets(update, user_id, session)
     
     async def correct_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1425,9 +1541,12 @@ Tap 📋 Reports for detailed analysis"""
             )
             return
         
-        # Save with duplicate override
+        # Mark as duplicate override so _save_invoice_to_sheets picks it up later
+        session['is_duplicate_override'] = True
+        
+        # Save directly (override = user already decided)
         await self._save_invoice_to_sheets(update, user_id, session, is_duplicate_override=True)
-    
+
     async def _save_invoice_to_sheets(
         self,
         update: Update,
@@ -1894,8 +2013,24 @@ Tap 📋 Reports for detailed analysis"""
         # If user is in correction mode, /done means save with corrections
         if session['state'] == 'correcting':
             correction_count = len(session.get('corrections', {}))
-            await msg.reply_text(f"💾 Applying {correction_count} correction(s) and saving...")
-            await self._save_invoice_to_sheets(update, user_id, session)
+            session['state'] = 'reviewing'
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
+                    InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
+                ],
+                [
+                    InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
+                    InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
+                ],
+                [
+                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                ]
+            ])
+            await msg.reply_text(
+                f"✅ {correction_count} correction(s) applied!\n\nWhat would you like to do?",
+                reply_markup=keyboard
+            )
             return
         
         if not session['images'] and not session.get('batch'):
@@ -2020,11 +2155,15 @@ Tap 📋 Reports for detailed analysis"""
                     )
                     review_keyboard = InlineKeyboardMarkup([
                         [
-                            InlineKeyboardButton("✅ Save As-Is", callback_data="btn_confirm"),
-                            InlineKeyboardButton("✏️ Make Corrections", callback_data="btn_correct"),
+                            InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
+                            InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
                         ],
                         [
-                            InlineKeyboardButton("🗑 Cancel & Resend New Images", callback_data="btn_cancel_resend"),
+                            InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
+                            InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
+                        ],
+                        [
+                            InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
                         ]
                     ])
                     await msg.reply_text(review_msg, reply_markup=review_keyboard)
@@ -2054,9 +2193,24 @@ Tap 📋 Reports for detailed analysis"""
                     # Log the duplicate attempt
                     print(f"[DUPLICATE] Invoice {invoice_data.get('Invoice_No', 'unknown')} detected as duplicate but saving anyway (warn-only mode)")
             
-            # No review needed - proceed to save (even if duplicate)
-            await msg.reply_text("⏳ Validating data...  (3/4)")
-            await self._save_invoice_to_sheets(update, user_id, session)
+            # No review needed - show save options directly
+            session['state'] = 'reviewing'
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
+                    InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
+                ],
+                [
+                    InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
+                ],
+                [
+                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                ]
+            ])
+            await msg.reply_text(
+                "✅ Validation complete!\n\nWhat would you like to do?",
+                reply_markup=keyboard
+            )
             
         except Exception as e:
             error_keyboard = InlineKeyboardMarkup([
