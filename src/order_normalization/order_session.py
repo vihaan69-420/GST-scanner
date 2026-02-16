@@ -40,6 +40,7 @@ class OrderSession:
         self.error = None
         self.warning = None
         self.result = None  # Will store clean invoice data
+        self.last_button_message_id = None  # Track message with Submit button
     
     def _generate_order_id(self) -> str:
         """Generate unique order ID"""
