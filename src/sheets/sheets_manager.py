@@ -722,7 +722,7 @@ class SheetsManager:
             # Try to open customer master sheet
             try:
                 customer_sheet = self.spreadsheet.worksheet(config.CUSTOMER_MASTER_SHEET)
-            except:
+            except gspread.exceptions.WorksheetNotFound:
                 # Sheet doesn't exist yet
                 return None
             
@@ -776,7 +776,7 @@ class SheetsManager:
                     customer_sheet.append_row(config.CUSTOMER_MASTER_COLUMNS)
                     headers = config.CUSTOMER_MASTER_COLUMNS
                     
-            except:
+            except gspread.exceptions.WorksheetNotFound:
                 # Sheet doesn't exist - create it
                 customer_sheet = self.spreadsheet.add_worksheet(
                     title=config.CUSTOMER_MASTER_SHEET,
@@ -834,7 +834,7 @@ class SheetsManager:
             # Try to open HSN master sheet
             try:
                 hsn_sheet = self.spreadsheet.worksheet(config.HSN_MASTER_SHEET)
-            except:
+            except gspread.exceptions.WorksheetNotFound:
                 return None
             
             headers = hsn_sheet.row_values(1)
@@ -886,7 +886,7 @@ class SheetsManager:
                     hsn_sheet.append_row(config.HSN_MASTER_COLUMNS)
                     headers = config.HSN_MASTER_COLUMNS
                     
-            except:
+            except gspread.exceptions.WorksheetNotFound:
                 # Sheet doesn't exist - create it
                 hsn_sheet = self.spreadsheet.add_worksheet(
                     title=config.HSN_MASTER_SHEET,
@@ -952,7 +952,7 @@ class SheetsManager:
                 if not headers:
                     dup_sheet.append_row(config.DUPLICATE_ATTEMPTS_COLUMNS)
                     
-            except:
+            except gspread.exceptions.WorksheetNotFound:
                 # Sheet doesn't exist - create it
                 dup_sheet = self.spreadsheet.add_worksheet(
                     title=config.DUPLICATE_ATTEMPTS_SHEET,
