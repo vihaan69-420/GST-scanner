@@ -59,6 +59,16 @@ if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
     print("[OK] Epic 2: Order Upload module loaded")
 # ═══════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════
+# Tier 4: Batch Processing Engine (Feature-Flagged, Local Only)
+# ═══════════════════════════════════════════════════════════════════
+if config.ENABLE_BATCH_MODE:
+    sys.path.insert(0, str(config.PROJECT_ROOT))
+    from batch_engine.batch_manager import BatchManager
+    from batch_engine.batch_models import BatchStatus
+    print("[OK] Tier 4: Batch engine module loaded")
+# ═══════════════════════════════════════════════════════════════════
+
 
 async def setup_bot_commands(application):
     """
@@ -69,17 +79,13 @@ async def setup_bot_commands(application):
         BotCommand("start", "Start bot & show main menu"),
         BotCommand("upload", "Purchase Order"),
         BotCommand("generate", "Generate GST reports"),
-        BotCommand("cancel", "Cancel current operation"),
         BotCommand("help", "Help & guide"),
     ]
     
-    # Add Epic 2 commands if feature enabled (only primary action, not derived ones)
+    # Add Epic 2 commands if feature enabled
     if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
         commands.insert(2, BotCommand("order_upload", "Sales Order"))
-    
-    # Epic 3: Subscribe command (always available)
-    commands.append(BotCommand("subscribe", "Manage subscription plan"))
-    
+
     await application.bot.set_my_commands(commands)
     print("[OK] Bot commands menu configured", flush=True)
     print(f"[OK] Menu commands: {[c.command for c in commands]}", flush=True)
@@ -163,6 +169,18 @@ class GSTScannerBot:
         # Epic 3: Per-tenant SheetsManager cache
         # ═══════════════════════════════════════════════════════
         self._tenant_sheets_cache = {}  # {sheet_id: SheetsManager}
+        # ═══════════════════════════════════════════════════════
+
+        # ═══════════════════════════════════════════════════════
+        # Tier 4: Batch Processing Engine (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        if config.ENABLE_BATCH_MODE:
+            self.batch_manager = BatchManager()
+            self.batch_sessions = {}  # {user_id: {'images': [], 'business_type': 'Purchase'}}
+            print("[OK] Tier 4: Batch engine enabled")
+        else:
+            self.batch_manager = None
+            self.batch_sessions = {}
         # ═══════════════════════════════════════════════════════
 
     
@@ -353,7 +371,25 @@ class GSTScannerBot:
         if user_id in self.order_sessions:
             del self.order_sessions[user_id]
         
-        # Initialize session
+        # Tier 4: Show mode selection when batch mode is enabled
+        if config.ENABLE_BATCH_MODE:
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_upload"),
+                    InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_upload"),
+                ],
+                [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+            ])
+            await update.message.reply_text(
+                "📸 Purchase Order\n\n"
+                "Choose processing mode:\n\n"
+                "Single Mode — process one invoice now\n"
+                "Batch Mode — queue multiple invoices for background processing",
+                reply_markup=keyboard
+            )
+            return
+        
+        # Initialize session (single mode when batch is disabled)
         self._get_user_session(user_id)
         self.user_sessions[user_id]['state'] = 'uploading'
         
@@ -420,6 +456,11 @@ class GSTScannerBot:
             row.append(InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"))
         keyboard = [row]
         # ═══════════════════════════════════════════════════════
+        # Tier 4: Batch Status button (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        if config.ENABLE_BATCH_MODE:
+            keyboard.append([InlineKeyboardButton("📋 Batch Status", callback_data="menu_my_batches")])
+        # ═══════════════════════════════════════════════════════
         return InlineKeyboardMarkup(keyboard)
 
     def create_upload_submenu(self):
@@ -452,6 +493,10 @@ class GSTScannerBot:
             [InlineKeyboardButton("Upload Guide", callback_data="help_upload")],
             [InlineKeyboardButton("Corrections", callback_data="help_corrections")],
             [InlineKeyboardButton("Export Guide", callback_data="help_export")],
+            [InlineKeyboardButton("Cancel Operation", callback_data="help_cancel")],
+            [InlineKeyboardButton("Generate Reports", callback_data="help_reports")],
+            [InlineKeyboardButton("Manage Subscription", callback_data="help_subscription")],
+            [InlineKeyboardButton("Batch Status & Cancel", callback_data="help_batch")],
             [InlineKeyboardButton("Troubleshooting", callback_data="help_trouble")],
             [InlineKeyboardButton("Support", callback_data="help_contact")],
             [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
@@ -473,34 +518,32 @@ class GSTScannerBot:
         """Handle /help command"""
         max_images = config.MAX_IMAGES_PER_INVOICE
         help_message = (
-            "📚 How to Use GST Scanner Bot\n"
+            "📚 GST Scanner Bot — Quick Guide\n"
             "\n"
-            "─────────────────────\n"
-            "📸 INVOICES\n"
-            "─────────────────────\n"
-            "1. Tap Upload Invoice (or just send a photo)\n"
-            "2. Send one or more pages (JPG/PNG)\n"
-            "3. Tap Process Invoice — done!\n"
-            f"\n"
-            f"Up to {max_images} images per invoice.\n"
+            "📸 Purchase Order\n"
+            f"Send photos or tap /upload (up to {max_images} pages).\n"
+            "Choose Single or Batch mode when prompted.\n"
             "\n"
-            "─────────────────────\n"
-            "📦 HANDWRITTEN ORDERS\n"
-            "─────────────────────\n"
-            "1. Tap Sales Order from the menu\n"
-            "2. Send photos of order notes\n"
-            "3. Tap Submit Order for PDF generation\n"
+            "📦 Sales Order\n"
+            "Tap /order_upload, send order note photos,\n"
+            "then submit for PDF generation.\n"
             "\n"
-            "─────────────────────\n"
-            "💡 Tips for best results\n"
-            "─────────────────────\n"
-            "• Good lighting = better accuracy\n"
-            "• Keep images clear and focused\n"
-            "• Send all pages from the same document\n"
+            "📊 Reports — /generate\n"
+            "GSTR-1, GSTR-2, CSV export, quick stats.\n"
             "\n"
-            "Questions? Contact your administrator.\n"
+            "📋 Batch — /batch_status  /batch_cancel\n"
+            "Check progress or cancel a running batch.\n"
             "\n"
-            "─────────────────────\n"
+            "💳 Subscription — /subscribe\n"
+            "View plan, usage, and quota.\n"
+            "\n"
+            "❌ Cancel — /cancel\n"
+            "Stop any operation in progress.\n"
+            "\n"
+            "💡 Tips\n"
+            "Good lighting, clear focus, all pages\n"
+            "from the same document in one session.\n"
+            "\n"
             f"🔧 v{config.BOT_VERSION} | {config.BOT_BUILD_NAME}"
         )
         
@@ -581,20 +624,40 @@ class GSTScannerBot:
             )
         
         elif callback_data == "menu_upload":
-            # Start upload session
-            user_id = update.effective_user.id
-            self._get_user_session(user_id)
-            self.user_sessions[user_id]['state'] = 'uploading'
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
-            ])
-            await query.edit_message_text(
-                "📸 Upload Invoice\n\n"
-                "Send me your invoice images (one or multiple pages).\n"
-                "Tap Process Invoice when you've sent all pages.",
-                reply_markup=keyboard
-            )
+            # ═══════════════════════════════════════════════════════
+            # Tier 4: Show mode selection when batch mode is enabled
+            # ═══════════════════════════════════════════════════════
+            if config.ENABLE_BATCH_MODE:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_upload"),
+                        InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_upload"),
+                    ],
+                    [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+                ])
+                await query.edit_message_text(
+                    "📸 Purchase Order\n\n"
+                    "Choose processing mode:\n\n"
+                    "Single Mode — process one invoice now\n"
+                    "Batch Mode — queue multiple invoices for background processing",
+                    reply_markup=keyboard
+                )
+            else:
+                # Original single-mode flow (unchanged)
+                user_id = update.effective_user.id
+                self._get_user_session(user_id)
+                self.user_sessions[user_id]['state'] = 'uploading'
+                
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                ])
+                await query.edit_message_text(
+                    "📸 Upload Invoice\n\n"
+                    "Send me your invoice images (one or multiple pages).\n"
+                    "Tap Process Invoice when you've sent all pages.",
+                    reply_markup=keyboard
+                )
+            # ═══════════════════════════════════════════════════════
         
         elif callback_data == "menu_generate":
             # Show generate submenu
@@ -621,6 +684,149 @@ class GSTScannerBot:
             )
         
         # ═══════════════════════════════════════════════════════
+        # Tier 4: BATCH MODE CALLBACKS (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        elif callback_data == "menu_single_upload":
+            if not config.ENABLE_BATCH_MODE:
+                pass  # Should not reach here, but fail-safe
+            user_id = update.effective_user.id
+            self._get_user_session(user_id)
+            self.user_sessions[user_id]['state'] = 'uploading'
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+            ])
+            await query.edit_message_text(
+                "📸 Upload Invoice\n\n"
+                "Send me your invoice images (one or multiple pages).\n"
+                "Tap Process Invoice when you've sent all pages.",
+                reply_markup=keyboard
+            )
+
+        elif callback_data == "menu_batch_upload":
+            if not config.ENABLE_BATCH_MODE:
+                await query.edit_message_text(
+                    "Batch mode is not enabled.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            user_id = update.effective_user.id
+            if user_id in self.user_sessions:
+                self._clear_user_session(user_id)
+            self.batch_sessions[user_id] = {
+                'images': [],
+                'business_type': 'Purchase',
+                'last_button_message_id': None,
+            }
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Submit Batch", callback_data="btn_submit_batch"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                ]
+            ])
+            await query.edit_message_text(
+                "📦 Batch Mode\n\n"
+                "Send me all your invoice images.\n"
+                "Each image = one invoice.\n\n"
+                "When you've sent everything, tap Submit Batch.\n"
+                "I'll queue them for background processing and give you a tracking token.",
+                reply_markup=keyboard
+            )
+
+        elif callback_data == "btn_submit_batch":
+            if not config.ENABLE_BATCH_MODE:
+                return
+            user_id = update.effective_user.id
+            batch_session = self.batch_sessions.get(user_id)
+            if not batch_session or not batch_session['images']:
+                await query.edit_message_text(
+                    "No images to submit. Send invoice photos first, then tap Submit Batch.",
+                )
+                return
+            await query.edit_message_text("Queuing your batch...")
+            try:
+                record = self.batch_manager.create_batch(
+                    user_id=str(user_id),
+                    username=update.effective_user.username or '',
+                    invoice_paths=batch_session['images'],
+                    business_type=batch_session.get('business_type', 'Purchase'),
+                )
+                del self.batch_sessions[user_id]
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📋 Batch Status", callback_data=f"bst_{record.token_id}"),
+                        InlineKeyboardButton("❌ Cancel Batch", callback_data=f"bca_{record.token_id}"),
+                    ],
+                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+                ])
+                await update.effective_message.reply_text(
+                    f"✅ Batch queued!\n\n"
+                    f"Token: {record.token_id}\n"
+                    f"Invoices: {record.total_invoices}\n\n"
+                    f"The background worker will process them.",
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                await update.effective_message.reply_text(
+                    f"Failed to queue batch: {str(e)}\n\nPlease try again.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+
+        elif callback_data == "menu_my_batches":
+            if not config.ENABLE_BATCH_MODE:
+                return
+            user_id = update.effective_user.id
+            await self._show_user_batches(query, user_id)
+
+        elif callback_data == "menu_single_order_upload":
+            if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+                return
+            user_id = update.effective_user.id
+            if user_id in self.user_sessions:
+                del self.user_sessions[user_id]
+            order_session = OrderSession(user_id, update.effective_user.username)
+            self.order_sessions[user_id] = order_session
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+            ])
+            await query.edit_message_text(
+                "📦 Sales Order (Handwritten Notes)\n\n"
+                "✅ Ready to receive order pages!\n\n"
+                "📌 INSTRUCTIONS\n"
+                "1. Send me photos of handwritten order notes\n"
+                "2. You can send multiple pages if the order spans multiple sheets\n"
+                "3. Tap ✅ Submit Order when you've sent all pages\n\n"
+                "I'll extract the line items, match with pricing, and generate a clean PDF.",
+                reply_markup=keyboard
+            )
+
+        elif callback_data == "menu_batch_order_upload":
+            if not config.ENABLE_BATCH_MODE or not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
+                return
+            user_id = update.effective_user.id
+            if user_id in self.user_sessions:
+                self._clear_user_session(user_id)
+            self.batch_sessions[user_id] = {
+                'images': [],
+                'business_type': 'Sales',
+                'last_button_message_id': None,
+            }
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Submit Batch", callback_data="btn_submit_batch"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                ]
+            ])
+            await query.edit_message_text(
+                "📦 Batch Mode — Sales Order\n\n"
+                "Send me all your order page images.\n"
+                "All pages will be treated as one order.\n\n"
+                "When you've sent everything, tap Submit Batch.\n"
+                "I'll queue them for background processing and give you a tracking token.",
+                reply_markup=keyboard
+            )
+        # ═══════════════════════════════════════════════════════
+
+        # ═══════════════════════════════════════════════════════
         # Epic 2: ORDER UPLOAD MENU (Feature-Flagged)
         # ═══════════════════════════════════════════════════════
         elif callback_data == "menu_order_upload":
@@ -637,25 +843,42 @@ class GSTScannerBot:
                 print(f"[DEBUG] Clearing existing invoice session for user {user_id}")
                 del self.user_sessions[user_id]
             
-            # Start order upload session
-            order_session = OrderSession(user_id, update.effective_user.username)
-            self.order_sessions[user_id] = order_session
-            print(f"[DEBUG] Created order session for user {user_id}")
-            print(f"[DEBUG] order_sessions now contains: {list(self.order_sessions.keys())}")
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
-            ])
-            await query.edit_message_text(
-                "📦 Sales Order (Handwritten Notes)\n\n"
-                "✅ Ready to receive order pages!\n\n"
-                "📌 INSTRUCTIONS\n"
-                "1. Send me photos of handwritten order notes\n"
-                "2. You can send multiple pages if the order spans multiple sheets\n"
-                "3. Tap ✅ Submit Order when you've sent all pages\n\n"
-                "I'll extract the line items, match with pricing, and generate a clean PDF.",
-                reply_markup=keyboard
-            )
+            # Tier 4: Show mode selection when batch mode is enabled
+            if config.ENABLE_BATCH_MODE:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_order_upload"),
+                        InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_order_upload"),
+                    ],
+                    [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+                ])
+                await query.edit_message_text(
+                    "📦 Sales Order\n\n"
+                    "Choose processing mode:\n\n"
+                    "Single Mode — process one order now\n"
+                    "Batch Mode — queue order pages for background processing",
+                    reply_markup=keyboard
+                )
+            else:
+                # Start order upload session (single mode)
+                order_session = OrderSession(user_id, update.effective_user.username)
+                self.order_sessions[user_id] = order_session
+                print(f"[DEBUG] Created order session for user {user_id}")
+                print(f"[DEBUG] order_sessions now contains: {list(self.order_sessions.keys())}")
+                
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                ])
+                await query.edit_message_text(
+                    "📦 Sales Order (Handwritten Notes)\n\n"
+                    "✅ Ready to receive order pages!\n\n"
+                    "📌 INSTRUCTIONS\n"
+                    "1. Send me photos of handwritten order notes\n"
+                    "2. You can send multiple pages if the order spans multiple sheets\n"
+                    "3. Tap ✅ Submit Order when you've sent all pages\n\n"
+                    "I'll extract the line items, match with pricing, and generate a clean PDF.",
+                    reply_markup=keyboard
+                )
         # ═══════════════════════════════════════════════════════
         
         # ═══════════════════════════════════════════════════════
@@ -716,13 +939,16 @@ class GSTScannerBot:
             return
         
         elif callback_data == "btn_cancel":
-            # Clear both order and invoice sessions
+            # Clear order, invoice, and batch sessions
             cancelled = False
             if user_id in self.order_sessions:
                 del self.order_sessions[user_id]
                 cancelled = True
             if user_id in self.user_sessions:
                 self._clear_user_session(user_id)
+                cancelled = True
+            if user_id in self.batch_sessions:
+                del self.batch_sessions[user_id]
                 cancelled = True
             if cancelled:
                 await query.edit_message_text(
@@ -1050,6 +1276,67 @@ class GSTScannerBot:
         # ═══════════════════════════════════════════════════════
 
         # ═══════════════════════════════════════════════════════
+        # Tier 4: PER-BATCH ACTION BUTTONS (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        elif callback_data.startswith("bst_"):
+            if not config.ENABLE_BATCH_MODE:
+                return
+            token_id = callback_data[4:]
+            user_id = update.effective_user.id
+            try:
+                record = self.batch_manager.get_status(token_id)
+            except Exception as e:
+                await query.edit_message_text(
+                    f"Could not fetch status: {str(e)}",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            if not record:
+                await query.edit_message_text(
+                    f"Batch not found: {token_id}",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            detail = self._format_batch_detail(record)
+            buttons = [
+                [
+                    InlineKeyboardButton("🔄 Refresh", callback_data=f"bst_{token_id}"),
+                    InlineKeyboardButton("❌ Cancel Batch", callback_data=f"bca_{token_id}"),
+                ],
+                [InlineKeyboardButton("📋 All Batches", callback_data="menu_my_batches")],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+            ]
+            await query.edit_message_text(
+                f"📋 Batch Status\n\n{detail}",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            return
+
+        elif callback_data.startswith("bca_"):
+            if not config.ENABLE_BATCH_MODE:
+                return
+            token_id = callback_data[4:]
+            user_id = update.effective_user.id
+            result = self.batch_manager.cancel_batch(token_id, str(user_id))
+            if result['success']:
+                await query.edit_message_text(
+                    f"✅ Batch cancelled: {token_id}",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                buttons = [
+                    [InlineKeyboardButton("🔄 Refresh Status", callback_data=f"bst_{token_id}")],
+                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+                ]
+                await query.edit_message_text(
+                    f"Cannot cancel: {error_msg}",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+            return
+        # ═══════════════════════════════════════════════════════
+
+        # ═══════════════════════════════════════════════════════
         # UPLOAD SUBMENU ACTIONS
         # ═══════════════════════════════════════════════════════
         
@@ -1359,6 +1646,87 @@ Useful Commands:
 
 ─────────────────────
 🔧 v{version} | {build}""".format(version=config.BOT_VERSION, build=config.BOT_BUILD_NAME)
+            await query.edit_message_text(
+                help_text,
+                reply_markup=self.create_help_submenu()
+            )
+        
+        elif callback_data == "help_cancel":
+            help_text = (
+                "❌ Cancel Operation\n"
+                "\n"
+                "Use /cancel at any time to stop the current\n"
+                "operation and return to a clean state.\n"
+                "\n"
+                "This works for:\n"
+                "• Invoice uploads in progress\n"
+                "• Sales order sessions\n"
+                "• Batch uploads being built\n"
+                "• Any multi-step workflow\n"
+                "\n"
+                "After cancelling, you can start a new\n"
+                "operation right away."
+            )
+            await query.edit_message_text(
+                help_text,
+                reply_markup=self.create_help_submenu()
+            )
+        
+        elif callback_data == "help_reports":
+            help_text = (
+                "📊 Generate Reports\n"
+                "\n"
+                "Use /generate to access reports and exports.\n"
+                "\n"
+                "Available options:\n"
+                "• GSTR-1 / GSTR-2 reports\n"
+                "• CSV data export\n"
+                "• Quick stats overview\n"
+                "\n"
+                "Reports are generated from your processed\n"
+                "invoices stored in Google Sheets."
+            )
+            await query.edit_message_text(
+                help_text,
+                reply_markup=self.create_help_submenu()
+            )
+        
+        elif callback_data == "help_subscription":
+            help_text = (
+                "💳 Manage Subscription\n"
+                "\n"
+                "Use /subscribe to view and manage your plan.\n"
+                "\n"
+                "From subscription settings you can:\n"
+                "• View your current plan and usage\n"
+                "• Check remaining quota\n"
+                "• Upgrade or change plans\n"
+                "\n"
+                "Contact your administrator for billing\n"
+                "questions or custom plans."
+            )
+            await query.edit_message_text(
+                help_text,
+                reply_markup=self.create_help_submenu()
+            )
+        
+        elif callback_data == "help_batch":
+            help_text = (
+                "📋 Batch Status & Cancel\n"
+                "\n"
+                "Check batch progress:\n"
+                "  /batch_status — View all your batches\n"
+                "  and their current processing status\n"
+                "\n"
+                "Cancel a batch:\n"
+                "  /batch_cancel — Stop a queued or\n"
+                "  running batch from processing further\n"
+                "\n"
+                "Batch modes are available for both\n"
+                "Purchase Orders and Sales Orders.\n"
+                "Select 'Batch Mode' when prompted after\n"
+                "/upload or /order_upload."
+            )
             await query.edit_message_text(
                 help_text,
                 reply_markup=self.create_help_submenu()
@@ -2244,7 +2612,25 @@ Tap 📋 Reports for detailed analysis"""
         if user_id in self.user_sessions:
             del self.user_sessions[user_id]
         
-        # Create order session
+        # Tier 4: Show mode selection when batch mode is enabled
+        if config.ENABLE_BATCH_MODE:
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_order_upload"),
+                    InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_order_upload"),
+                ],
+                [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+            ])
+            await update.message.reply_text(
+                "📦 Sales Order\n\n"
+                "Choose processing mode:\n\n"
+                "Single Mode — process one order now\n"
+                "Batch Mode — queue order pages for background processing",
+                reply_markup=keyboard
+            )
+            return
+        
+        # Create order session (single mode when batch is disabled)
         from order_normalization import OrderSession
         order_session = OrderSession(user_id, update.effective_user.username)
         self.order_sessions[user_id] = order_session
@@ -2387,32 +2773,62 @@ Tap 📋 Reports for detailed analysis"""
             if user_id in self.order_sessions:
                 del self.order_sessions[user_id]
     
+    async def _update_order_status_message(self, order_session, chat_id: int, context, max_reached: bool = False):
+        """Remove buttons from the previous status message, then send a new one with the cumulative total."""
+        count = len(order_session.pages)
+        label = "page" if count == 1 else "pages"
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
+                InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+            ]
+        ])
+
+        if max_reached:
+            text = (
+                f"⚠️ Maximum {config.MAX_IMAGES_PER_ORDER} pages per order.\n"
+                f"Tap Submit Order or Cancel."
+            )
+        else:
+            text = (
+                f"📄 Received {count} {label}.\n\n"
+                f"Got more pages? Send them.\n"
+                f"All done? Tap Submit Order below."
+            )
+
+        if order_session.last_button_message_id:
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=order_session.last_button_message_id,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=keyboard,
+        )
+        order_session.last_button_message_id = msg.message_id
+
     async def handle_order_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle order photo uploads (separate from invoice photos)"""
         if not config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
-            return  # Silently ignore if feature disabled
+            return
         
         user_id = update.effective_user.id
         
-        # Check if user has an active order session
         if user_id not in self.order_sessions:
-            # Not in order mode, let normal invoice handler take care of it
             return
         
         order_session = self.order_sessions[user_id]
         
         # Check max images
         if len(order_session.pages) >= config.MAX_IMAGES_PER_ORDER:
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
-                ]
-            ])
-            await update.message.reply_text(
-                f"⚠️ Maximum {config.MAX_IMAGES_PER_ORDER} pages per order.\n"
-                f"Tap Submit Order or Cancel.",
-                reply_markup=keyboard
+            await self._update_order_status_message(
+                order_session, update.effective_chat.id, context, max_reached=True
             )
             return
         
@@ -2428,20 +2844,10 @@ Tap 📋 Reports for detailed analysis"""
             
             await file.download_to_drive(filepath)
             
-            # Add page to order session
-            page_number = order_session.add_page(filepath)
+            order_session.add_page(filepath)
             
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
-                ]
-            ])
-            await update.message.reply_text(
-                f"📄 Page {page_number} received!\n\n"
-                f"Got more pages? Send them.\n"
-                f"All done? Tap Submit Order below.",
-                reply_markup=keyboard
+            await self._update_order_status_message(
+                order_session, update.effective_chat.id, context
             )
             
         except Exception as e:
@@ -2462,16 +2868,8 @@ Tap 📋 Reports for detailed analysis"""
         
         # Check max images
         if len(order_session.pages) >= config.MAX_IMAGES_PER_ORDER:
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
-                ]
-            ])
-            await update.message.reply_text(
-                f"⚠️ Maximum {config.MAX_IMAGES_PER_ORDER} pages per order.\n"
-                f"Tap Submit Order or Cancel.",
-                reply_markup=keyboard
+            await self._update_order_status_message(
+                order_session, update.effective_chat.id, context, max_reached=True
             )
             return
         
@@ -2488,20 +2886,10 @@ Tap 📋 Reports for detailed analysis"""
             os.makedirs(config.TEMP_FOLDER, exist_ok=True)
             await file.download_to_drive(filepath)
             
-            # Add page to order session
-            page_number = order_session.add_page(filepath)
+            order_session.add_page(filepath)
             
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Submit Order", callback_data="btn_order_submit"),
-                    InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
-                ]
-            ])
-            await update.message.reply_text(
-                f"📄 Page {page_number} received!\n\n"
-                f"Got more pages? Send them.\n"
-                f"All done? Tap Submit Order below.",
-                reply_markup=keyboard
+            await self._update_order_status_message(
+                order_session, update.effective_chat.id, context
             )
             
         except Exception as e:
@@ -2512,7 +2900,280 @@ Tap 📋 Reports for detailed analysis"""
             )
     
     # ═══════════════════════════════════════════════════════════════════
-    
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Tier 4: Batch Processing Commands & Handlers (Feature-Flagged)
+    # ═══════════════════════════════════════════════════════════════════
+
+    async def _update_batch_status_message(self, batch_session: dict, chat_id: int, context):
+        """Remove buttons from the previous status message, then send a new one with the cumulative total."""
+        count = len(batch_session['images'])
+        label = "invoice" if count == 1 else "invoices"
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Submit Batch", callback_data="btn_submit_batch"),
+                InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+            ]
+        ])
+        text = (
+            f"📄 Received {count} {label}.\n\n"
+            f"Send more, or tap Submit Batch when done."
+        )
+
+        if batch_session.get('last_button_message_id'):
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=batch_session['last_button_message_id'],
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=keyboard,
+        )
+        batch_session['last_button_message_id'] = msg.message_id
+
+    async def _handle_batch_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle photos sent during a batch session."""
+        user_id = update.effective_user.id
+        batch_session = self.batch_sessions.get(user_id)
+        if not batch_session:
+            return
+
+        photo = update.message.photo[-1]
+        try:
+            file = await photo.get_file()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"batch_{user_id}_{timestamp}.jpg"
+            filepath = os.path.join(config.TEMP_FOLDER, filename)
+            await file.download_to_drive(filepath)
+            batch_session['images'].append(filepath)
+
+            await self._update_batch_status_message(
+                batch_session, update.effective_chat.id, context
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"Could not download that image. Please try again."
+            )
+
+    async def _handle_batch_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle documents (image files) sent during a batch session."""
+        user_id = update.effective_user.id
+        batch_session = self.batch_sessions.get(user_id)
+        if not batch_session:
+            return
+        document = update.message.document
+        try:
+            file = await context.bot.get_file(document.file_id)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_name = document.file_name or 'batch_doc.jpg'
+            filename = f"batch_{user_id}_{timestamp}_{file_name}"
+            filepath = os.path.join(config.TEMP_FOLDER, filename)
+            await file.download_to_drive(filepath)
+            batch_session['images'].append(filepath)
+
+            await self._update_batch_status_message(
+                batch_session, update.effective_chat.id, context
+            )
+        except Exception:
+            await update.message.reply_text(
+                "Could not download that file. Please try again."
+            )
+
+    async def batch_submit_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /submit_batch command."""
+        if not config.ENABLE_BATCH_MODE:
+            return
+        user_id = update.effective_user.id
+        batch_session = self.batch_sessions.get(user_id)
+        if not batch_session or not batch_session['images']:
+            await update.message.reply_text(
+                "No batch images to submit.\n\n"
+                "Start batch mode from the menu first, send photos, then /submit_batch."
+            )
+            return
+        await update.message.reply_text("Queuing your batch...")
+        try:
+            record = self.batch_manager.create_batch(
+                user_id=str(user_id),
+                username=update.effective_user.username or '',
+                invoice_paths=batch_session['images'],
+                business_type=batch_session.get('business_type', 'Purchase'),
+            )
+            del self.batch_sessions[user_id]
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📋 Batch Status", callback_data=f"bst_{record.token_id}"),
+                    InlineKeyboardButton("❌ Cancel Batch", callback_data=f"bca_{record.token_id}"),
+                ],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+            ])
+            await update.message.reply_text(
+                f"✅ Batch queued!\n\n"
+                f"Token: {record.token_id}\n"
+                f"Invoices: {record.total_invoices}\n\n"
+                f"The background worker will process them.",
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"Failed to queue batch: {str(e)}\nPlease try again.",
+                reply_markup=self.create_main_menu_keyboard()
+            )
+
+    async def batch_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /batch_status TOKEN command."""
+        if not config.ENABLE_BATCH_MODE:
+            return
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "Usage: /batch_status TOKEN_ID\n\n"
+                "Example: /batch_status BATCH-20260216-12345-A7F92K"
+            )
+            return
+        token_id = args[0]
+        record = self.batch_manager.get_status(token_id)
+        if not record:
+            await update.message.reply_text(f"Batch not found: {token_id}")
+            return
+        await update.message.reply_text(
+            f"Batch Status: {token_id}\n\n"
+            f"Status: {record.status}\n"
+            f"Stage: {record.current_stage}\n"
+            f"Total: {record.total_invoices}\n"
+            f"Processed: {record.processed_count}\n"
+            f"Failed: {record.failed_count}\n"
+            f"Review: {record.review_count}\n"
+            f"Last Update: {record.last_update}\n"
+            f"Created: {record.created_at}"
+        )
+
+    async def batch_cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /batch_cancel TOKEN command."""
+        if not config.ENABLE_BATCH_MODE:
+            return
+        args = context.args
+        if not args:
+            await update.message.reply_text(
+                "Usage: /batch_cancel TOKEN_ID\n\n"
+                "Example: /batch_cancel BATCH-20260216-12345-A7F92K"
+            )
+            return
+        token_id = args[0]
+        user_id = update.effective_user.id
+        result = self.batch_manager.cancel_batch(token_id, str(user_id))
+        if result['success']:
+            await update.message.reply_text(
+                f"Batch cancelled: {token_id}",
+                reply_markup=self.create_main_menu_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                f"Cannot cancel: {result.get('error', 'Unknown error')}"
+            )
+
+    @staticmethod
+    def _format_batch_detail(rec, index: int = None) -> str:
+        """Format a BatchRecord into a detailed text block."""
+        prefix = f"{index}. " if index is not None else ""
+        progress = f"{rec.processed_count}/{rec.total_invoices} processed"
+        if rec.failed_count:
+            progress += f", {rec.failed_count} failed"
+        if rec.review_count:
+            progress += f", {rec.review_count} review"
+        return (
+            f"{prefix}{rec.token_id}\n"
+            f"   Status: {rec.status}\n"
+            f"   Stage: {rec.current_stage}\n"
+            f"   Progress: {progress}\n"
+            f"   Created: {rec.created_at}\n"
+            f"   Last Update: {rec.last_update or '—'}"
+        )
+
+    @staticmethod
+    def _build_batch_action_buttons(batches) -> list:
+        """Build per-batch inline keyboard rows with Refresh and Cancel buttons."""
+        rows = []
+        for rec in batches:
+            tid = rec.token_id
+            rows.append([
+                InlineKeyboardButton(f"🔄 Refresh {tid[-6:]}", callback_data=f"bst_{tid}"),
+                InlineKeyboardButton(f"❌ Cancel {tid[-6:]}", callback_data=f"bca_{tid}"),
+            ])
+        rows.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
+        return rows
+
+    async def my_batches_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /my_batches command — list all outstanding batches for the user."""
+        if not config.ENABLE_BATCH_MODE:
+            return
+        user_id = update.effective_user.id
+        try:
+            batches = self.batch_manager.get_user_batches(str(user_id), outstanding_only=True)
+        except Exception as e:
+            await update.message.reply_text(
+                f"Could not retrieve batches: {str(e)}",
+                reply_markup=self.create_main_menu_keyboard()
+            )
+            return
+
+        if not batches:
+            await update.message.reply_text(
+                "You have no outstanding batches.\n\n"
+                "Start a batch from 📸 Purchase Order > Batch Mode.",
+                reply_markup=self.create_main_menu_keyboard()
+            )
+            return
+
+        lines = ["📋 Batch Status\n"]
+        for i, rec in enumerate(batches, 1):
+            lines.append(self._format_batch_detail(rec, index=i))
+            lines.append("")
+
+        keyboard = InlineKeyboardMarkup(self._build_batch_action_buttons(batches))
+        await update.message.reply_text(
+            "\n".join(lines),
+            reply_markup=keyboard,
+        )
+
+    async def _show_user_batches(self, query, user_id: int):
+        """Shared logic for displaying outstanding batches (used by callback and command)."""
+        try:
+            batches = self.batch_manager.get_user_batches(str(user_id), outstanding_only=True)
+        except Exception as e:
+            await query.edit_message_text(
+                f"Could not retrieve batches: {str(e)}",
+                reply_markup=self.create_main_menu_keyboard()
+            )
+            return
+
+        if not batches:
+            await query.edit_message_text(
+                "You have no outstanding batches.\n\n"
+                "Start a batch from 📸 Purchase Order > Batch Mode.",
+                reply_markup=self.create_main_menu_keyboard()
+            )
+            return
+
+        lines = ["📋 Batch Status\n"]
+        for i, rec in enumerate(batches, 1):
+            lines.append(self._format_batch_detail(rec, index=i))
+            lines.append("")
+
+        keyboard = InlineKeyboardMarkup(self._build_batch_action_buttons(batches))
+        await query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=keyboard,
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming photo messages"""
         user_id = update.effective_user.id
@@ -2524,6 +3185,14 @@ Tap 📋 Reports for detailed analysis"""
         if (config.FEATURE_ORDER_UPLOAD_NORMALIZATION 
                 and user_id in self.order_sessions):
             await self.handle_order_photo(update, context)
+            return
+        # ═══════════════════════════════════════════════════════════════════
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Tier 4: Check if this is a batch photo (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════════════════
+        if config.ENABLE_BATCH_MODE and user_id in self.batch_sessions:
+            await self._handle_batch_photo(update, context)
             return
         # ═══════════════════════════════════════════════════════════════════
         
@@ -2644,6 +3313,29 @@ Tap 📋 Reports for detailed analysis"""
                     "📦 You're in order upload mode.\n\n"
                     "Please send images (JPG/PNG) of your handwritten order.\n"
                     "Tap ✅ Submit Order when done or ❌ Cancel to abort."
+                )
+                return
+        # ═══════════════════════════════════════════════════════════════════
+
+        # ═══════════════════════════════════════════════════════════════════
+        # Tier 4: Check if user is in batch mode (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════════════════
+        if config.ENABLE_BATCH_MODE and user_id in self.batch_sessions:
+            document = update.message.document
+            mime_type = document.mime_type or ''
+            file_name = document.file_name or ''
+            is_image = (
+                mime_type.startswith('image/') or
+                file_name.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp'))
+            )
+            if is_image:
+                await self._handle_batch_document(update, context)
+                return
+            else:
+                await update.message.reply_text(
+                    "📦 You're in batch upload mode.\n\n"
+                    "Please send images (JPG/PNG) of your invoices.\n"
+                    "Tap Submit Batch when done or Cancel to abort."
                 )
                 return
         # ═══════════════════════════════════════════════════════════════════
@@ -2910,6 +3602,17 @@ Tap 📋 Reports for detailed analysis"""
             application.add_handler(CommandHandler("order_submit", self.order_submit_command))
             print("[OK] Epic 2: Order upload commands registered")
         # ═══════════════════════════════════════════════════════
+
+        # ═══════════════════════════════════════════════════════
+        # Tier 4: Batch Processing command handlers (Feature-Flagged)
+        # ═══════════════════════════════════════════════════════
+        if config.ENABLE_BATCH_MODE:
+            application.add_handler(CommandHandler("submit_batch", self.batch_submit_command))
+            application.add_handler(CommandHandler("batch_status", self.batch_status_command))
+            application.add_handler(CommandHandler("batch_cancel", self.batch_cancel_command))
+            application.add_handler(CommandHandler("my_batches", self.my_batches_command))
+            print("[OK] Tier 4: Batch commands registered (including /my_batches)")
+        # ═══════════════════════════════════════════════════════
         
         # ═══════════════════════════════════════════════════════
         # Epic 3: Subscription command
@@ -2952,7 +3655,7 @@ Tap 📋 Reports for detailed analysis"""
             try:
                 application.run_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                 )
                 break  # Clean exit (e.g. SIGTERM) — don't retry
             except Exception as poll_err:

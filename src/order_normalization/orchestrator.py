@@ -164,7 +164,20 @@ class OrderNormalizationOrchestrator:
                 print(f"[ORCHESTRATOR] Generating {format_label}...")
                 await update.effective_message.reply_text(f"🔄 Step 6/6: Generating {format_label}...")
                 
-                if output_format == 'csv':
+                if output_format == 'csv' and config.FEATURE_ORDER_SPLIT_CSV:
+                    from exports.order_csv_exporter import OrderCSVExporter
+                    _csv_exporter = OrderCSVExporter()
+                    session_meta = {
+                        'page_count': len(order_session.pages),
+                        'created_by': order_session.user_id,
+                    }
+                    header_path, items_path = _csv_exporter.export_order(
+                        clean_invoice, session_meta
+                    )
+                    output_path = header_path
+                    if items_path:
+                        output_paths_extra = [items_path]
+                elif output_format == 'csv':
                     output_path = self.pdf_generator.generate_csv(clean_invoice)
                 else:
                     output_path = self.pdf_generator.generate_pdf(clean_invoice)
@@ -203,6 +216,18 @@ class OrderNormalizationOrchestrator:
             # === PHASE 8: SEND OUTPUT TO USER ===
             if output_path and os.path.exists(output_path):
                 await self.send_order_output_to_user(update, clean_invoice, output_path, output_format)
+                if config.FEATURE_ORDER_SPLIT_CSV and locals().get('output_paths_extra'):
+                    for extra_path in output_paths_extra:
+                        if os.path.exists(extra_path):
+                            try:
+                                with open(extra_path, 'rb') as ef:
+                                    await update.effective_message.reply_document(
+                                        document=ef,
+                                        filename=os.path.basename(extra_path),
+                                        caption="Order line items CSV"
+                                    )
+                            except Exception as send_err:
+                                print(f"[WARNING] Failed to send extra CSV: {send_err}")
             else:
                 await update.effective_message.reply_text(
                     "✅ Order processed and saved to Google Sheets!\n\n"
@@ -240,7 +265,108 @@ class OrderNormalizationOrchestrator:
                 f"Please contact support."
             )
             print(f"[ERROR] Orchestrator failed: {e}")
-    
+
+    def process_order_headless(self, pages: List[Dict], user_id: str, username: str = '', output_format: str = 'pdf') -> Dict:
+        """
+        Process an order without Telegram context (for batch worker).
+
+        Args:
+            pages: List of dicts with 'page_number', 'image_path', 'uploaded_at'
+            user_id: User ID string
+            username: Username string
+            output_format: 'pdf' or 'csv'
+
+        Returns:
+            Dict with 'success', 'order_id', 'output_path', 'error', 'clean_invoice'
+        """
+        from .order_session import OrderSession
+
+        order_session = OrderSession(int(user_id), username)
+        for page in pages:
+            order_session.add_page(page['image_path'])
+        order_session.submit()
+        order_session.set_processing()
+
+        try:
+            print(f"[ORCHESTRATOR-HEADLESS] Starting extraction for {order_session.order_id}...")
+            extracted_pages = self.extractor.extract_all_pages(order_session.pages)
+            total_lines = sum(len(page.get('lines_raw', [])) for page in extracted_pages)
+            if total_lines == 0:
+                raise Exception("No line items extracted from images. Please check image quality.")
+            order_metadata = {}
+            if extracted_pages and 'order_metadata' in extracted_pages[0]:
+                order_metadata = extracted_pages[0]['order_metadata']
+            print(f"[ORCHESTRATOR-HEADLESS] Extracted {total_lines} lines from {len(extracted_pages)} pages")
+
+            print(f"[ORCHESTRATOR-HEADLESS] Normalizing extracted data...")
+            normalized_lines = self.normalizer.normalize_all_lines(extracted_pages)
+            print(f"[ORCHESTRATOR-HEADLESS] Normalized {len(normalized_lines)} lines")
+
+            unique_lines = normalized_lines
+
+            print(f"[ORCHESTRATOR-HEADLESS] Matching with pricing sheet...")
+            try:
+                matched_lines = self.pricing_matcher.match_all_lines(unique_lines)
+            except Exception as e:
+                print(f"[WARNING] Pricing match failed: {e}")
+                matched_lines = unique_lines
+                for line in matched_lines:
+                    line['matched'] = False
+                    line['unit_price'] = 0.0
+
+            print(f"[ORCHESTRATOR-HEADLESS] Building clean invoice model...")
+            matched_lines = self.compute_line_totals(matched_lines)
+            clean_invoice = self.build_clean_invoice(
+                matched_lines,
+                order_session.to_dict(),
+                order_metadata
+            )
+
+            output_path = None
+            try:
+                if output_format == 'csv':
+                    output_path = self.pdf_generator.generate_csv(clean_invoice)
+                else:
+                    output_path = self.pdf_generator.generate_pdf(clean_invoice)
+                print(f"[ORCHESTRATOR-HEADLESS] Generated {output_format.upper()}: {output_path}")
+            except Exception as e:
+                print(f"[WARNING] {output_format.upper()} generation failed: {e}")
+
+            try:
+                session_metadata = {
+                    'page_count': len(order_session.pages),
+                    'created_by': order_session.user_id,
+                }
+                self.sheets_handler.append_order_summary(clean_invoice, session_metadata)
+                self.sheets_handler.append_order_line_items(clean_invoice)
+                self.sheets_handler.update_customer_details(
+                    clean_invoice.get('customer_name', 'N/A'),
+                    clean_invoice['order_date'],
+                )
+                print(f"[ORCHESTRATOR-HEADLESS] Uploaded to Google Sheets")
+            except Exception as e:
+                print(f"[WARNING] Google Sheets upload failed: {e}")
+
+            order_session.set_completed(clean_invoice)
+            return {
+                'success': True,
+                'order_id': clean_invoice['order_id'],
+                'output_path': output_path,
+                'error': '',
+                'clean_invoice': clean_invoice,
+            }
+
+        except Exception as e:
+            order_session.set_failed(str(e))
+            print(f"[ERROR] Orchestrator headless failed: {e}")
+            return {
+                'success': False,
+                'order_id': getattr(order_session, 'order_id', 'UNKNOWN'),
+                'output_path': None,
+                'error': str(e),
+                'clean_invoice': None,
+            }
+
     def compute_line_totals(self, matched_lines: List[Dict]) -> List[Dict]:
         """
         Compute quantity × rate = line total for each line

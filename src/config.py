@@ -333,6 +333,11 @@ DUPLICATE_ATTEMPTS_COLUMNS = [
 # Master feature flag - disables entire Epic 2 feature when false
 FEATURE_ORDER_UPLOAD_NORMALIZATION = os.getenv('FEATURE_ORDER_UPLOAD_NORMALIZATION', 'false').lower() == 'true'
 
+# Split order CSV export: when true, generate two files (header + line items)
+# matching ORDER_SUMMARY_COLUMNS and ORDER_LINE_ITEMS_COLUMNS schemas.
+# When false, uses the original single combined CSV from pdf_generator.
+FEATURE_ORDER_SPLIT_CSV = os.getenv('FEATURE_ORDER_SPLIT_CSV', 'false').lower() == 'true'
+
 # Pricing sheet configuration (configurable for future migration to Google Sheets)
 PRICING_SHEET_SOURCE = os.getenv('PRICING_SHEET_SOURCE', 'google_sheet')  # 'local_file' or 'google_sheet'
 PRICING_SHEET_PATH = os.getenv('PRICING_SHEET_PATH', 'Epic2 artifacts/UPDATED PRICE LIST FOR SAI-ABS 10 MAY-25.xls')
@@ -403,6 +408,15 @@ _default_tiers = json.dumps([
 ])
 SUBSCRIPTION_TIERS = json.loads(os.getenv('SUBSCRIPTION_TIERS', _default_tiers))
 DEFAULT_SUBSCRIPTION_TIER = os.getenv('DEFAULT_SUBSCRIPTION_TIER', 'free')
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TIER 4: BATCH PROCESSING ENGINE (Local Only)
+# ═══════════════════════════════════════════════════════════════════
+
+ENABLE_BATCH_MODE = os.getenv('ENABLE_BATCH_MODE', 'false').lower() == 'true'
+BATCH_QUEUE_SHEET_NAME = os.getenv('BATCH_QUEUE_SHEET_NAME', 'Batch_Queue')
+BATCH_SUPPRESS_VALIDATION = os.getenv('BATCH_SUPPRESS_VALIDATION', 'false').lower() == 'true'
 
 
 # ═══════════════════════════════════════════════════════════════════

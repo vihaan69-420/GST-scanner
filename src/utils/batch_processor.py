@@ -12,6 +12,8 @@ from typing import List, Dict, Callable
 import os
 import time
 
+import config
+
 
 class BatchProcessor:
     """Process multiple invoices in batch with error isolation"""
@@ -158,27 +160,26 @@ class BatchProcessor:
             # Get invoice number
             invoice_no = invoice_data.get('Invoice_No', 'UNKNOWN')
             
-            # Step 3: Check for duplicates
-            is_duplicate = self.sheets_manager.check_duplicate(invoice_no)
-            
-            if is_duplicate:
-                # Log duplicate attempt
-                if user_id:
-                    self.sheets_manager.log_duplicate_attempt(user_id, invoice_no, 'BATCH_REJECTED')
+            # Step 3: Check for duplicates (skipped when BATCH_SUPPRESS_VALIDATION is true)
+            if not config.BATCH_SUPPRESS_VALIDATION:
+                is_duplicate = self.sheets_manager.check_duplicate(invoice_no)
                 
-                return {
-                    'success': False,
-                    'error': f'Duplicate invoice: {invoice_no} already exists',
-                    'step_failed': 'Duplicate Check',
-                    'invoice_no': invoice_no,
-                    'is_duplicate': True
-                }
+                if is_duplicate:
+                    if user_id:
+                        self.sheets_manager.log_duplicate_attempt(user_id, invoice_no, 'BATCH_REJECTED')
+                    
+                    return {
+                        'success': False,
+                        'error': f'Duplicate invoice: {invoice_no} already exists',
+                        'step_failed': 'Duplicate Check',
+                        'invoice_no': invoice_no,
+                        'is_duplicate': True
+                    }
             
             # Step 4: Format for sheets
             invoice_row = self.gst_parser.format_for_sheets(invoice_data)
             line_items_rows = self.gst_parser.line_item_extractor.format_items_for_sheets(
-                line_items, 
-                invoice_no
+                line_items
             )
             
             # Step 5: Append to Google Sheets
@@ -216,8 +217,9 @@ class BatchProcessor:
                     validation_result
                 )
             
-            # Step 6: Update master data (Tier 3 feature)
-            self._update_master_data(invoice_data, line_items)
+            # Step 6: Update master data (Tier 3 feature, skipped when suppressing validation)
+            if not config.BATCH_SUPPRESS_VALIDATION:
+                self._update_master_data(invoice_data, line_items)
             
             return {
                 'success': True,
