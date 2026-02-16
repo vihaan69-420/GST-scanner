@@ -1,0 +1,4 @@
+Voucher_Type,Invoice_No,Invoice_Date,Party_Name,Party_GSTIN,Party_State_Code,Place_Of_Supply,Sales_Ledger,Invoice_Value,Total_Taxable_Value,CGST_Total,SGST_Total,IGST_Total,Cess_Total,Round_Off,Narration,Reference_No,Reference_Date,Reverse_Charge,Company_Name
+Sales,INV-2026-001,14/02/2026,ABC Trading Co,29AABCU9603R1ZP,29,29,Sales - GST 18%,11800.00,10000.00,900.00,900.00,0.00,0.00,0.00,Feb 2026 invoice,PO-100,10/02/2026,N,
+Sales,INV-2026-002,14/02/2026,XYZ Enterprises,07AAPCX1234M1ZT,29,07,Sales - GST 12%,5600.00,5000.00,0.00,0.00,600.00,0.00,0.00,Inter-state sale,,,,
+Purchase,INV-2026-003,14/02/2026,Supplier Corp,29AADCS5678N1Z4,29,29,Purchase - GST 18%,23600.00,20000.00,1800.00,1800.00,0.00,0.00,0.00,Raw material purchase,,,N,
