@@ -12,7 +12,7 @@ This module adds:
 import os
 import asyncio
 from datetime import datetime
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from calendar import month_name
 
@@ -158,7 +158,8 @@ class Tier3CommandHandlers:
         username = update.effective_user.username or update.effective_user.first_name
         
         # Process batch
-        result = self.batch_processor.process_batch(
+        result = await asyncio.to_thread(
+            self.batch_processor.process_batch,
             batch_invoices,
             progress_callback,
             audit_logger,
@@ -201,56 +202,39 @@ class Tier3CommandHandlers:
     
     async def export_gstr1_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export_gstr1 command - Interactive GSTR-1 export"""
-        user_id = update.effective_user.id
-        session = self.bot._get_user_session(user_id)
-        
-        # Set state for multi-step interaction
-        session['export_command'] = 'gstr1'
-        session['export_step'] = 'month'
-        
         await update.message.reply_text(
-            "📊 GSTR-1 Export\n\n"
-            "Enter the month (1-12):"
+            "📄 GSTR-1 Export\n\n"
+            "Select the month:",
+            reply_markup=self.bot.create_month_picker("gstr1")
         )
     
     async def export_gstr3b_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /export_gstr3b command - Interactive GSTR-3B export"""
-        user_id = update.effective_user.id
-        session = self.bot._get_user_session(user_id)
-        
-        session['export_command'] = 'gstr3b'
-        session['export_step'] = 'month'
-        
         await update.message.reply_text(
-            "📊 GSTR-3B Summary Generation\n\n"
-            "Enter the month (1-12):"
+            "📋 GSTR-3B Summary\n\n"
+            "Select the month:",
+            reply_markup=self.bot.create_month_picker("gstr3b")
         )
     
     async def reports_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /reports command - Interactive report generation"""
-        user_id = update.effective_user.id
-        session = self.bot._get_user_session(user_id)
-        
-        session['export_command'] = 'reports'
-        session['export_step'] = 'type'
-        
         await update.message.reply_text(
             "📈 Operational Reports\n\n"
-            "Select report type:\n"
-            "1️⃣ Processing Statistics\n"
-            "2️⃣ GST Summary (monthly)\n"
-            "3️⃣ Duplicate Attempts\n"
-            "4️⃣ Correction Analysis\n"
-            "5️⃣ Comprehensive Report\n\n"
-            "Reply with number (1-5):"
+            "Select report type:",
+            reply_markup=self.bot.create_report_type_picker()
         )
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command - Quick statistics"""
         await update.message.reply_text("📊 Generating statistics...")
-        
+        nav_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📈 Reports", callback_data="menu_generate"),
+                InlineKeyboardButton("📋 Main Menu", callback_data="menu_main"),
+            ]
+        ])
         try:
-            result = self.reporter.generate_processing_stats()
+            result = await asyncio.to_thread(self.reporter.generate_processing_stats)
             
             if result['success']:
                 message = "📊 PROCESSING STATISTICS\n\n"
@@ -266,12 +250,12 @@ class Tier3CommandHandlers:
                     for error in result['top_errors'][:3]:
                         message += f"  • {error['type']}: {error['count']}\n"
                 
-                await update.message.reply_text(message)
+                await update.message.reply_text(message, reply_markup=nav_keyboard)
             else:
-                await update.message.reply_text(f"❌ {result['message']}")
+                await update.message.reply_text(f"❌ {result['message']}", reply_markup=nav_keyboard)
                 
         except Exception as e:
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            await update.message.reply_text(f"❌ Error: {str(e)}", reply_markup=nav_keyboard)
     
     async def handle_export_interaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -297,9 +281,17 @@ class Tier3CommandHandlers:
                 if 1 <= month <= 12:
                     session['export_month'] = month
                     session['export_step'] = 'year'
+                    cur_year = datetime.now().year
+                    keyboard = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton(str(cur_year), callback_data=f"year_{export_command}_{month}_{cur_year}"),
+                            InlineKeyboardButton(str(cur_year - 1), callback_data=f"year_{export_command}_{month}_{cur_year - 1}"),
+                        ]
+                    ])
                     await update.message.reply_text(
-                        f"✓ Month: {month_name[month]}\n\n"
-                        "Enter the year (e.g., 2026):"
+                        f"✅ Month: {month_name[month]}\n\n"
+                        "Select the year (or type it):",
+                        reply_markup=keyboard
                     )
                     return True
                 else:
@@ -318,17 +310,19 @@ class Tier3CommandHandlers:
                     
                     if export_command == 'gstr1':
                         session['export_step'] = 'type'
+                        m = session['export_month']
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("📄 B2B Invoices", callback_data=f"gstr1type_{m}_{year}_1")],
+                            [InlineKeyboardButton("📄 B2C Small", callback_data=f"gstr1type_{m}_{year}_2")],
+                            [InlineKeyboardButton("📄 HSN Summary", callback_data=f"gstr1type_{m}_{year}_3")],
+                            [InlineKeyboardButton("📄 All Three", callback_data=f"gstr1type_{m}_{year}_4")],
+                        ])
                         await update.message.reply_text(
-                            f"✓ Period: {month_name[session['export_month']]} {year}\n\n"
-                            "Select export type:\n"
-                            "1️⃣ B2B Invoices\n"
-                            "2️⃣ B2C Small\n"
-                            "3️⃣ HSN Summary\n"
-                            "4️⃣ All Three\n\n"
-                            "Reply with number (1-4):"
+                            f"✅ Period: {month_name[session['export_month']]} {year}\n\n"
+                            "Select export type:",
+                            reply_markup=keyboard
                         )
                     else:
-                        # GSTR-3B or reports - execute now
                         await self._execute_export(update, session)
                     return True
                 else:
@@ -354,11 +348,13 @@ class Tier3CommandHandlers:
                 session['report_type'] = message_text
                 
                 if message_text in ['2', '3', '5']:
-                    # Need period for these reports
                     session['export_step'] = 'month'
-                    await update.message.reply_text("Enter the month (1-12):")
+                    keyboard = self.bot.create_month_picker(f"rpt{message_text}")
+                    await update.message.reply_text(
+                        "Select the month:",
+                        reply_markup=keyboard
+                    )
                 else:
-                    # Execute immediately for stats and corrections
                     await self._execute_export(update, session)
                 return True
             else:
@@ -372,9 +368,15 @@ class Tier3CommandHandlers:
         export_command = session['export_command']
         month = session.get('export_month')
         year = session.get('export_year')
+        msg = update.effective_message
         
-        await update.message.reply_text("⏳ Generating export... This may take a moment.")
-        
+        await msg.reply_text("⏳ Generating export... This may take a moment.")
+        nav_keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📊 Reports & Exports", callback_data="menu_generate"),
+                InlineKeyboardButton("📋 Main Menu", callback_data="menu_main"),
+            ]
+        ])
         try:
             if export_command == 'gstr1':
                 await self._execute_gstr1_export(update, session, month, year)
@@ -382,8 +384,15 @@ class Tier3CommandHandlers:
                 await self._execute_gstr3b_export(update, month, year)
             elif export_command == 'reports':
                 await self._execute_reports(update, session, month, year)
+            await msg.reply_text(
+                "What would you like to do next?",
+                reply_markup=nav_keyboard
+            )
         except Exception as e:
-            await update.message.reply_text(f"❌ Export failed: {str(e)}")
+            await msg.reply_text(
+                f"❌ Export failed: {str(e)}",
+                reply_markup=nav_keyboard
+            )
         finally:
             # Clear export session
             session.pop('export_command', None)
@@ -395,6 +404,7 @@ class Tier3CommandHandlers:
     
     async def _execute_gstr1_export(self, update: Update, session: dict, month: int, year: int):
         """Execute GSTR-1 export"""
+        msg = update.effective_message
         export_type = session.get('export_type')
         period_str = f"{year}_{month:02d}"
         output_dir = f"{config.TEMP_FOLDER}/GSTR1_{period_str}"
@@ -410,7 +420,7 @@ class Tier3CommandHandlers:
         type_code, type_name = type_map[export_type]
         
         if type_code == 'all':
-            result = self.gstr1_exporter.export_all(month, year, output_dir)
+            result = await asyncio.to_thread(self.gstr1_exporter.export_all, month, year, output_dir)
             
             if result['success']:
                 message = f"✅ GSTR-1 Export Complete - {month_name[month]} {year}\n\n"
@@ -418,9 +428,8 @@ class Tier3CommandHandlers:
                 message += f"B2C: {result['b2c']['invoice_count']} invoices\n"
                 message += f"HSN: {result['hsn']['unique_hsn_count']} codes\n"
                 
-                await update.message.reply_text(message)
+                await msg.reply_text(message)
                 
-                # Send files
                 for filename in [
                     f"B2B_Invoices_{period_str}.csv",
                     f"B2C_Small_{period_str}.csv",
@@ -429,31 +438,31 @@ class Tier3CommandHandlers:
                 ]:
                     filepath = os.path.join(output_dir, filename)
                     if os.path.exists(filepath):
-                        await update.message.reply_document(
+                        await msg.reply_document(
                             document=open(filepath, 'rb'),
                             filename=filename
                         )
         else:
-            # Single export type
             if type_code == 'b2b':
                 output_path = os.path.join(output_dir, f"B2B_Invoices_{period_str}.csv")
-                result = self.gstr1_exporter.export_b2b(month, year, output_path)
+                result = await asyncio.to_thread(self.gstr1_exporter.export_b2b, month, year, output_path)
             elif type_code == 'b2c':
                 output_path = os.path.join(output_dir, f"B2C_Small_{period_str}.csv")
-                result = self.gstr1_exporter.export_b2c_small(month, year, output_path)
-            else:  # hsn
+                result = await asyncio.to_thread(self.gstr1_exporter.export_b2c_small, month, year, output_path)
+            else:
                 output_path = os.path.join(output_dir, f"HSN_Summary_{period_str}.csv")
-                result = self.gstr1_exporter.export_hsn_summary(month, year, output_path)
+                result = await asyncio.to_thread(self.gstr1_exporter.export_hsn_summary, month, year, output_path)
             
             if result['success']:
-                await update.message.reply_text(f"✅ {result['message']}")
-                await update.message.reply_document(
+                await msg.reply_text(f"✅ {result['message']}")
+                await msg.reply_document(
                     document=open(result['output_file'], 'rb'),
                     filename=os.path.basename(result['output_file'])
                 )
     
     async def _execute_gstr3b_export(self, update: Update, month: int, year: int):
         """Execute GSTR-3B export"""
+        msg = update.effective_message
         period_str = f"{year}_{month:02d}"
         output_dir = f"{config.TEMP_FOLDER}/GSTR3B_{period_str}"
         os.makedirs(output_dir, exist_ok=True)
@@ -461,7 +470,7 @@ class Tier3CommandHandlers:
         json_path = os.path.join(output_dir, f"GSTR3B_Summary_{period_str}.json")
         text_path = os.path.join(output_dir, f"GSTR3B_Report_{period_str}.txt")
         
-        result = self.gstr3b_generator.generate_summary(month, year, json_path)
+        result = await asyncio.to_thread(self.gstr3b_generator.generate_summary, month, year, json_path)
         
         if result['success']:
             summary = result['data']['summary']
@@ -471,68 +480,66 @@ class Tier3CommandHandlers:
             message += f"Total Invoices: {summary['total_invoices']}\n"
             message += f"Total Tax Liability: Rs. {total_tax['total']:,.2f}\n"
             
-            await update.message.reply_text(message)
+            await msg.reply_text(message)
             
-            # Generate and send text report
-            self.gstr3b_generator.generate_formatted_report(month, year, text_path)
+            await asyncio.to_thread(self.gstr3b_generator.generate_formatted_report, month, year, text_path)
             
-            # Send both files
-            await update.message.reply_document(
+            await msg.reply_document(
                 document=open(json_path, 'rb'),
                 filename=f"GSTR3B_Summary_{period_str}.json"
             )
-            await update.message.reply_document(
+            await msg.reply_document(
                 document=open(text_path, 'rb'),
                 filename=f"GSTR3B_Report_{period_str}.txt"
             )
         else:
-            await update.message.reply_text(f"❌ {result['message']}")
+            await msg.reply_text(f"❌ {result['message']}")
     
     async def _execute_reports(self, update: Update, session: dict, month: int = None, year: int = None):
         """Execute operational reports"""
+        msg = update.effective_message
         report_type = session.get('report_type')
         
-        if report_type == '1':  # Processing stats
-            result = self.reporter.generate_processing_stats()
+        if report_type == '1':
+            result = await asyncio.to_thread(self.reporter.generate_processing_stats)
             report_name = "Processing_Statistics"
-        elif report_type == '2':  # GST summary
-            result = self.reporter.generate_gst_summary(month, year)
+        elif report_type == '2':
+            result = await asyncio.to_thread(self.reporter.generate_gst_summary, month, year)
             report_name = f"GST_Summary_{year}_{month:02d}"
-        elif report_type == '3':  # Duplicates
-            result = self.reporter.generate_duplicate_report(month, year)
+        elif report_type == '3':
+            result = await asyncio.to_thread(self.reporter.generate_duplicate_report, month, year)
             report_name = f"Duplicate_Attempts_{year}_{month:02d}"
-        elif report_type == '4':  # Corrections
-            result = self.reporter.generate_correction_analysis()
+        elif report_type == '4':
+            result = await asyncio.to_thread(self.reporter.generate_correction_analysis)
             report_name = "Correction_Analysis"
-        else:  # Comprehensive
+        else:
             output_dir = f"{config.TEMP_FOLDER}/Reports_{year}_{month:02d}"
-            result = self.reporter.generate_comprehensive_report(month, year, output_dir)
+            result = await asyncio.to_thread(self.reporter.generate_comprehensive_report, month, year, output_dir)
             
             if result['success']:
-                await update.message.reply_text("✅ Reports generated!")
-                await update.message.reply_document(
+                await msg.reply_text("✅ Reports generated!")
+                await msg.reply_document(
                     document=open(result['json_file'], 'rb'),
                     filename=os.path.basename(result['json_file'])
                 )
-                await update.message.reply_document(
+                await msg.reply_document(
                     document=open(result['text_file'], 'rb'),
                     filename=os.path.basename(result['text_file'])
                 )
             else:
-                await update.message.reply_text("❌ Report generation failed")
+                await msg.reply_text("❌ Report generation failed")
             return
         
         if result['success']:
-            # Save and send as JSON
             import json
             output_path = f"{config.TEMP_FOLDER}/{report_name}.json"
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, indent=2, ensure_ascii=False)
             
-            await update.message.reply_text("✅ Report generated!")
-            await update.message.reply_document(
+            await msg.reply_text("✅ Report generated!")
+            await msg.reply_document(
                 document=open(output_path, 'rb'),
                 filename=f"{report_name}.json"
             )
         else:
-            await update.message.reply_text(f"❌ {result['message']}")
+            await msg.reply_text(f"❌ {result['message']}")

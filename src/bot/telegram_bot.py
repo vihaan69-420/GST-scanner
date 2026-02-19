@@ -183,6 +183,10 @@ class GSTScannerBot:
             self.batch_sessions = {}
         # ═══════════════════════════════════════════════════════
 
+        # Active processing tasks — allows the watchdog to cancel on user request
+        self._active_processing_tasks: dict = {}  # {user_id: asyncio.Task}
+        self._retry_context: dict = {}  # {user_id: {'operation': 'order'|'invoice', ...}}
+
     
     def _ensure_sheets_manager(self, sheet_id: str = None):
         """Lazy initialize SheetsManager on first use.
@@ -209,7 +213,7 @@ class GSTScannerBot:
                 print("[OK] SheetsManager initialized (shared, tenant isolation ON)")
         self.sheets_manager = self._tenant_sheets_cache[cache_key]
 
-    def _get_tenant_sheet_id(self, user_id: int):
+    async def _get_tenant_sheet_id(self, user_id: int):
         """Get tenant-specific sheet ID if feature is enabled (Epic 3).
 
         Returns:
@@ -217,20 +221,20 @@ class GSTScannerBot:
         """
         if not config.FEATURE_TENANT_SHEET_ISOLATION:
             return None
-        self._ensure_tenant_manager()
+        await self._ensure_tenant_manager()
         if self.tenant_manager:
             try:
-                return self.tenant_manager.get_tenant_sheet_id(user_id)
+                return await asyncio.to_thread(self.tenant_manager.get_tenant_sheet_id, user_id)
             except Exception as e:
                 print(f"[WARNING] Could not get tenant sheet_id for {user_id}: {e}")
         return None
     
-    def _ensure_tenant_manager(self):
-        """Lazy initialize TenantManager on first use"""
+    async def _ensure_tenant_manager(self):
+        """Lazy initialize TenantManager on first use (non-blocking)"""
         if self.tenant_manager is None:
             try:
                 from utils.tenant_manager import TenantManager
-                self.tenant_manager = TenantManager()
+                self.tenant_manager = await asyncio.to_thread(TenantManager)
                 print("[OK] TenantManager initialized (lazy)")
             except Exception as e:
                 print(f"[WARNING] TenantManager init failed: {e}")
@@ -260,9 +264,9 @@ class GSTScannerBot:
 
         # Case 2: Not registered at all — start registration flow
         try:
-            self._ensure_tenant_manager()
+            await self._ensure_tenant_manager()
             if self.tenant_manager:
-                tenant = self.tenant_manager.get_tenant(user_id)
+                tenant = await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)
                 if not tenant:
                     # User has no tenant — initiate registration
                     tg_username = user.username or ''
@@ -298,23 +302,49 @@ class GSTScannerBot:
         
         welcome_message = (
             f"Hey {user.first_name}! 👋\n"
-            f"Welcome to GST Scanner Bot.\n"
+            f"Welcome to GST Scanner Bot\n"
             f"\n"
-            f"📸 Purchase Orders — snap & organize\n"
-            f"📦 Sales Orders — handwritten to digital\n"
+            f"Here's what I can do for you:\n"
             f"\n"
-            f"Tap below to get started!"
+            f"📸 Purchase Orders — snap invoices, I extract GST data\n"
+            f"📦 Sales Orders — turn handwritten notes into clean PDFs\n"
+            f"📊 Reports — GSTR-1, GSTR-3B, stats at your fingertips\n"
+            f"\n"
+            f"Pick an option below to get started!"
         )
         
         # Check tenant registration
         try:
-            self._ensure_tenant_manager()
+            await self._ensure_tenant_manager()
             if self.tenant_manager:
                 print(f"[TENANT] Looking up user_id={user.id} (type={type(user.id).__name__})", flush=True)
-                tenant = self.tenant_manager.get_tenant(user.id)
+                tenant = await asyncio.to_thread(self.tenant_manager.get_tenant, user.id)
                 print(f"[TENANT] Lookup result: {tenant}", flush=True)
                 if tenant:
-                    # Existing user - show welcome + menu
+                    if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                        try:
+                            from subscription.subscription_config import TIER_PLANS
+                            plan_id = tenant.get('subscription_plan') or config.DEFAULT_SUBSCRIPTION_TIER
+                            plan = TIER_PLANS.get(plan_id, TIER_PLANS.get('free', {}))
+                            plan_name = plan.get('name', plan_id.title())
+
+                            inv_used = int(tenant.get('invoice_count', 0) or 0)
+                            ord_used = int(tenant.get('order_count', 0) or 0)
+                            inv_limit = plan.get('invoice_limit', 0)
+                            ord_limit = plan.get('order_limit', 0)
+
+                            inv_str = f"{inv_used}" if inv_limit == -1 else f"{inv_used}/{inv_limit}"
+                            ord_str = f"{ord_used}" if ord_limit == -1 else f"{ord_used}/{ord_limit}"
+                            inv_left = "Unlimited" if inv_limit == -1 else f"{max(inv_limit - inv_used, 0)} left"
+                            ord_left = "Unlimited" if ord_limit == -1 else f"{max(ord_limit - ord_used, 0)} left"
+
+                            welcome_message += (
+                                f"\n\n📋 Plan: {plan_name}\n"
+                                f"📸 Invoices: {inv_str} ({inv_left})\n"
+                                f"📦 Orders: {ord_str} ({ord_left})"
+                            )
+                        except Exception:
+                            pass
                     await update.message.reply_text(
                         welcome_message,
                         reply_markup=self.create_main_menu_keyboard()
@@ -356,7 +386,7 @@ class GSTScannerBot:
     async def menu_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /menu command - Show main menu"""
         await update.message.reply_text(
-            "What would you like to do? 👇",
+            await self._get_main_menu_text(update.effective_user.id),
             reply_markup=self.create_main_menu_keyboard()
         )
     
@@ -378,7 +408,7 @@ class GSTScannerBot:
                     InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_upload"),
                     InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_upload"),
                 ],
-                [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+                [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
             ])
             await update.message.reply_text(
                 "📸 Purchase Order\n\n"
@@ -410,7 +440,7 @@ class GSTScannerBot:
             return
         await update.message.reply_text(
             "📊 Reports & Exports\n\n"
-            "What do you need?",
+            "Select what you need:",
             reply_markup=self.create_generate_submenu()
         )
     
@@ -448,108 +478,178 @@ class GSTScannerBot:
     
     def create_main_menu_keyboard(self):
         """Create main menu with inline buttons"""
-        # ═══════════════════════════════════════════════════════
-        # Purchase Order + Sales Order side by side
-        # ═══════════════════════════════════════════════════════
         row = [InlineKeyboardButton("📸 Purchase Order", callback_data="menu_upload")]
         if config.FEATURE_ORDER_UPLOAD_NORMALIZATION:
             row.append(InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"))
         keyboard = [row]
-        # ═══════════════════════════════════════════════════════
-        # Tier 4: Batch Status button (Feature-Flagged)
-        # ═══════════════════════════════════════════════════════
+        keyboard.append([InlineKeyboardButton("📊 Reports & Exports", callback_data="menu_generate")])
         if config.ENABLE_BATCH_MODE:
             keyboard.append([InlineKeyboardButton("📋 Batch Status", callback_data="menu_my_batches")])
-        # ═══════════════════════════════════════════════════════
+        keyboard.append([
+            InlineKeyboardButton("💳 Subscription", callback_data="menu_subscribe"),
+            InlineKeyboardButton("❓ Help & Guide", callback_data="menu_help"),
+        ])
         return InlineKeyboardMarkup(keyboard)
 
     def create_upload_submenu(self):
         """Submenu for Upload options"""
         keyboard = [
-            [InlineKeyboardButton("Single Invoice", callback_data="upload_single")],
-            [InlineKeyboardButton("Batch Upload", callback_data="upload_batch")],
-            [InlineKeyboardButton("Upload Document", callback_data="upload_document")],
-            [InlineKeyboardButton("Upload Help", callback_data="help_upload")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+            [InlineKeyboardButton("📄 Single Invoice", callback_data="upload_single")],
+            [InlineKeyboardButton("📦 Batch Upload", callback_data="upload_batch")],
+            [InlineKeyboardButton("📎 Upload Document", callback_data="upload_document")],
+            [InlineKeyboardButton("❓ Upload Help", callback_data="help_upload")],
+            [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
         ]
         return InlineKeyboardMarkup(keyboard)
 
     def create_generate_submenu(self):
         """Submenu for Generate GST options"""
         keyboard = [
-            [InlineKeyboardButton("GSTR-1 Export", callback_data="gen_gstr1")],
-            [InlineKeyboardButton("GSTR-3B Summary", callback_data="gen_gstr3b")],
-            [InlineKeyboardButton("Reports", callback_data="gen_reports")],
-            [InlineKeyboardButton("Quick Stats", callback_data="gen_stats")],
-            [InlineKeyboardButton("Export Help", callback_data="help_export")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+            [InlineKeyboardButton("📄 GSTR-1 Export", callback_data="gen_gstr1")],
+            [InlineKeyboardButton("📋 GSTR-3B Summary", callback_data="gen_gstr3b")],
+            [InlineKeyboardButton("📈 Reports", callback_data="gen_reports")],
+            [InlineKeyboardButton("📊 Quick Stats", callback_data="gen_stats")],
+            [InlineKeyboardButton("❓ Export Help", callback_data="help_export")],
+            [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
         ]
         return InlineKeyboardMarkup(keyboard)
 
     def create_help_submenu(self):
         """Submenu for Help options"""
         keyboard = [
-            [InlineKeyboardButton("Getting Started", callback_data="help_start")],
-            [InlineKeyboardButton("Upload Guide", callback_data="help_upload")],
-            [InlineKeyboardButton("Corrections", callback_data="help_corrections")],
-            [InlineKeyboardButton("Export Guide", callback_data="help_export")],
-            [InlineKeyboardButton("Cancel Operation", callback_data="help_cancel")],
-            [InlineKeyboardButton("Generate Reports", callback_data="help_reports")],
-            [InlineKeyboardButton("Manage Subscription", callback_data="help_subscription")],
-            [InlineKeyboardButton("Batch Status & Cancel", callback_data="help_batch")],
-            [InlineKeyboardButton("Troubleshooting", callback_data="help_trouble")],
-            [InlineKeyboardButton("Support", callback_data="help_contact")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+            [
+                InlineKeyboardButton("✅ Getting Started", callback_data="help_start"),
+                InlineKeyboardButton("📸 Upload Guide", callback_data="help_upload"),
+            ],
+            [
+                InlineKeyboardButton("✏️ Corrections", callback_data="help_corrections"),
+                InlineKeyboardButton("📊 Export Guide", callback_data="help_export"),
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel Operation", callback_data="help_cancel"),
+                InlineKeyboardButton("📈 Reports", callback_data="help_reports"),
+            ],
+            [
+                InlineKeyboardButton("💳 Subscription", callback_data="help_subscription"),
+                InlineKeyboardButton("📋 Batch Help", callback_data="help_batch"),
+            ],
+            [
+                InlineKeyboardButton("🔧 Troubleshooting", callback_data="help_trouble"),
+                InlineKeyboardButton("✉ Support", callback_data="help_contact"),
+            ],
+            [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
         ]
         return InlineKeyboardMarkup(keyboard)
 
     def create_usage_submenu(self):
         """Submenu for Usage/Stats options"""
         keyboard = [
-            [InlineKeyboardButton("Quick Stats", callback_data="stats_quick")],
-            [InlineKeyboardButton("Detailed Reports", callback_data="stats_detailed")],
-            [InlineKeyboardButton("History", callback_data="stats_history")],
-            [InlineKeyboardButton("Export Data", callback_data="stats_export")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+            [InlineKeyboardButton("📊 Quick Stats", callback_data="stats_quick")],
+            [InlineKeyboardButton("📈 Detailed Reports", callback_data="stats_detailed")],
+            [InlineKeyboardButton("📅 History", callback_data="stats_history")],
+            [InlineKeyboardButton("💾 Export Data", callback_data="stats_export")],
+            [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
         ]
         return InlineKeyboardMarkup(keyboard)
-    
+
+    def create_month_picker(self, command_prefix: str):
+        """Create a 4x3 month picker inline keyboard.
+        command_prefix is used in callback_data: month_{prefix}_{1-12}"""
+        from calendar import month_abbr
+        if command_prefix == "stats":
+            back_callback = "menu_usage"
+        elif command_prefix.startswith("rpt"):
+            back_callback = "gen_reports"
+        else:
+            back_callback = "menu_generate"
+        months = []
+        for row_start in (1, 4, 7, 10):
+            row = []
+            for m in range(row_start, row_start + 3):
+                row.append(InlineKeyboardButton(
+                    month_abbr[m], callback_data=f"month_{command_prefix}_{m}"
+                ))
+            months.append(row)
+        months.append([InlineKeyboardButton("◀ Back", callback_data=back_callback)])
+        return InlineKeyboardMarkup(months)
+
+    def create_year_picker(self, command_prefix: str, month: int):
+        """Create a year picker with current and previous year."""
+        from datetime import datetime as _dt
+        current_year = _dt.now().year
+        if command_prefix.startswith("rpt"):
+            back_callback = "gen_reports"
+        elif command_prefix == "stats":
+            back_callback = "stats_detailed"
+        else:
+            back_callback = f"gen_{command_prefix}"
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    str(current_year),
+                    callback_data=f"year_{command_prefix}_{month}_{current_year}"
+                ),
+                InlineKeyboardButton(
+                    str(current_year - 1),
+                    callback_data=f"year_{command_prefix}_{month}_{current_year - 1}"
+                ),
+            ],
+            [InlineKeyboardButton("◀ Back", callback_data=back_callback)]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def create_report_type_picker(self):
+        """Create a report type picker inline keyboard."""
+        keyboard = [
+            [InlineKeyboardButton("📊 Processing Statistics", callback_data="report_type_1")],
+            [InlineKeyboardButton("📋 GST Summary (monthly)", callback_data="report_type_2")],
+            [InlineKeyboardButton("⚠️ Duplicate Attempts", callback_data="report_type_3")],
+            [InlineKeyboardButton("✏️ Correction Analysis", callback_data="report_type_4")],
+            [InlineKeyboardButton("📈 Comprehensive Report", callback_data="report_type_5")],
+            [InlineKeyboardButton("◀ Back", callback_data="menu_generate")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def create_gstr1_type_picker(self, month: int, year: int):
+        """Create GSTR-1 export type picker."""
+        keyboard = [
+            [InlineKeyboardButton("📄 B2B Invoices", callback_data=f"gstr1type_{month}_{year}_1")],
+            [InlineKeyboardButton("📄 B2C Small", callback_data=f"gstr1type_{month}_{year}_2")],
+            [InlineKeyboardButton("📄 HSN Summary", callback_data=f"gstr1type_{month}_{year}_3")],
+            [InlineKeyboardButton("📄 All Three", callback_data=f"gstr1type_{month}_{year}_4")],
+            [InlineKeyboardButton("◀ Back", callback_data="menu_generate")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         max_images = config.MAX_IMAGES_PER_INVOICE
         help_message = (
-            "📚 GST Scanner Bot — Quick Guide\n"
+            "❓ Help & Guide\n"
             "\n"
             "📸 Purchase Order\n"
-            f"Send photos or tap /upload (up to {max_images} pages).\n"
-            "Choose Single or Batch mode when prompted.\n"
+            f"  Send photos or tap Upload (up to {max_images} pages).\n"
+            "  Choose Single or Batch mode when prompted.\n"
             "\n"
             "📦 Sales Order\n"
-            "Tap /order_upload, send order note photos,\n"
-            "then submit for PDF generation.\n"
+            "  Send order note photos, then submit for PDF.\n"
             "\n"
-            "📊 Reports — /generate\n"
-            "GSTR-1, GSTR-2, CSV export, quick stats.\n"
+            "📊 Reports & Exports\n"
+            "  GSTR-1, GSTR-3B, CSV export, quick stats.\n"
             "\n"
-            "📋 Batch — /batch_status  /batch_cancel\n"
-            "Check progress or cancel a running batch.\n"
+            "📋 Batch Processing\n"
+            "  Queue multiple invoices for background processing.\n"
             "\n"
-            "💳 Subscription — /subscribe\n"
-            "View plan, usage, and quota.\n"
+            "💡 Tips for best results\n"
+            "  Good lighting, clear focus, all pages\n"
+            "  from the same document in one session.\n"
             "\n"
-            "❌ Cancel — /cancel\n"
-            "Stop any operation in progress.\n"
-            "\n"
-            "💡 Tips\n"
-            "Good lighting, clear focus, all pages\n"
-            "from the same document in one session.\n"
-            "\n"
-            f"🔧 v{config.BOT_VERSION} | {config.BOT_BUILD_NAME}"
+            "Tap a topic below for more details:"
         )
         
         await update.message.reply_text(
             help_message,
-            reply_markup=self.create_main_menu_keyboard()
+            reply_markup=self.create_help_submenu()
         )
     
     # ═══════════════════════════════════════════════════════════════════
@@ -559,46 +659,511 @@ class GSTScannerBot:
         """Handle /subscribe -- show available subscription tiers"""
         user_id = update.effective_user.id
 
-        self._ensure_tenant_manager()
+        await self._ensure_tenant_manager()
         if not self.tenant_manager:
             await update.message.reply_text(
-                "Subscription service is currently unavailable. Please try again later."
+                "❌ Subscription service is currently unavailable.\n\n"
+                "Please try again later.",
+                reply_markup=self.create_main_menu_keyboard()
             )
             return
 
-        tenant = self.tenant_manager.get_tenant(user_id)
+        tenant = await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)
         if not tenant:
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🚀 Get Started", callback_data="menu_main")]
+                [InlineKeyboardButton("✅ Get Started", callback_data="menu_main")]
             ])
             await update.message.reply_text(
-                "You need to register first. Tap below to get started.",
+                "You need to register first.\n\nTap below to get started.",
                 reply_markup=keyboard
             )
             return
 
         current_plan = tenant.get('subscription_plan', config.DEFAULT_SUBSCRIPTION_TIER)
 
-        # Build inline keyboard with available tiers
-        buttons = []
-        for tier in config.SUBSCRIPTION_TIERS:
-            label = tier['name']
-            if tier['id'] == current_plan:
-                label = f"{tier['name']} (current)"
-            buttons.append([
-                InlineKeyboardButton(
-                    f"{label} -- {tier['description']}",
-                    callback_data=f"subscribe_{tier['id']}"
-                )
-            ])
-        buttons.append([InlineKeyboardButton("Back to Menu", callback_data="menu_main")])
+        if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+            await self._show_subscription_plans_enhanced(update.message, user_id, current_plan, tenant)
+        else:
+            buttons = []
+            for tier in config.SUBSCRIPTION_TIERS:
+                label = tier['name']
+                if tier['id'] == current_plan:
+                    label = f"✅ {tier['name']} (current)"
+                else:
+                    label = f"💳 {tier['name']}"
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{label} -- {tier['description']}",
+                        callback_data=f"subscribe_{tier['id']}"
+                    )
+                ])
+            buttons.append([InlineKeyboardButton("◀ Back", callback_data="menu_main")])
 
-        await update.message.reply_text(
-            "Subscription Plans\n\n"
-            f"Your current plan: {current_plan.title()}\n\n"
-            "Select a plan:",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            await update.message.reply_text(
+                "💳 Subscription Plans\n\n"
+                f"Your current plan: {current_plan.title()}\n\n"
+                "Select a plan below:",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+
+    async def _show_subscription_plans_enhanced(self, message_target, user_id, current_plan, tenant):
+        """Enhanced subscription view with pricing, features, and payment links."""
+        from subscription.subscription_config import TIER_PLANS, TIER_ORDER
+
+        lines = ["💳 *Subscription Plans*\n"]
+        lines.append(f"Your current plan: *{current_plan.title()}*")
+        expires_at = tenant.get('subscription_expires_at', '')
+        if expires_at:
+            lines.append(f"Expires: {expires_at[:10]}")
+        lines.append(f"Invoices used: {tenant.get('invoice_count', '0')}")
+        lines.append(f"Orders used: {tenant.get('order_count', '0')}")
+        lines.append("")
+
+        for tid in TIER_ORDER:
+            plan = TIER_PLANS[tid]
+            is_current = tid == current_plan
+            marker = "✅" if is_current else "💳"
+            if plan['monthly_price'] == 0:
+                price_str = "Free"
+            else:
+                annual_monthly = round(plan['annual_price'] / 12)
+                price_str = f"₹{plan['monthly_price']}/mo or ₹{plan['annual_price']}/yr (₹{annual_monthly}/mo)"
+            lines.append(f"{marker} *{plan['name']}* — {price_str}")
+            limit_label = "Unlimited" if plan['invoice_limit'] == -1 else str(plan['invoice_limit'])
+            lines.append(f"  Invoices: {limit_label}/mo | Users: {plan['users']}")
+            top_features = plan['features'][:3]
+            for f in top_features:
+                lines.append(f"  • {f}")
+            if is_current:
+                lines.append("  _(current plan)_")
+            lines.append("")
+
+        buttons = []
+        current_rank = TIER_ORDER.index(current_plan) if current_plan in TIER_ORDER else 0
+        for tid in TIER_ORDER:
+            if tid == current_plan:
+                continue
+            plan = TIER_PLANS[tid]
+            rank = TIER_ORDER.index(tid)
+            if rank > current_rank and plan['monthly_price'] > 0:
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"⬆ {plan['name']} Monthly (₹{plan['monthly_price']})",
+                        callback_data=f"subscribe_pay_{tid}_monthly"
+                    ),
+                    InlineKeyboardButton(
+                        f"⬆ Annual (₹{plan['annual_price']})",
+                        callback_data=f"subscribe_pay_{tid}_annual"
+                    ),
+                ])
+            elif rank < current_rank:
+                buttons.append([InlineKeyboardButton(
+                    f"⬇ Downgrade to {plan['name']}",
+                    callback_data=f"subscribe_downgrade_{tid}"
+                )])
+
+        if current_plan != 'free':
+            buttons.append([InlineKeyboardButton("❌ Cancel Subscription", callback_data="subscribe_cancel")])
+        buttons.append([InlineKeyboardButton("📋 View Features", callback_data="subscribe_features")])
+        buttons.append([InlineKeyboardButton("🧾 Transaction History", callback_data="subscribe_history")])
+        buttons.append([InlineKeyboardButton("◀ Back", callback_data="menu_main")])
+
+        text = "\n".join(lines)
+        if hasattr(message_target, 'edit_message_text'):
+            await message_target.edit_message_text(
+                text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        else:
+            await message_target.reply_text(
+                text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons)
+            )
+
+    def _get_subscription_service(self):
+        """Lazy-init the SubscriptionService for Telegram use."""
+        if not hasattr(self, '_sub_service') or self._sub_service is None:
+            try:
+                from subscription.transaction_store import TransactionStore
+                from subscription.subscription_service import SubscriptionService
+                from subscription.razorpay_client import RazorpayClient
+
+                db_path = config.API_USER_DB_PATH.replace('users.db', 'subscription.db')
+                txn_store = TransactionStore(db_path=db_path)
+
+                razorpay_client = None
+                if config.RAZORPAY_KEY_ID and config.RAZORPAY_KEY_SECRET:
+                    razorpay_client = RazorpayClient(config.RAZORPAY_KEY_ID, config.RAZORPAY_KEY_SECRET)
+
+                self._sub_service = SubscriptionService(
+                    razorpay_client=razorpay_client,
+                    transaction_store=txn_store,
+                    tenant_manager=self.tenant_manager,
+                )
+            except Exception as e:
+                print(f"[BOT] Subscription service init failed: {e}")
+                self._sub_service = None
+        return self._sub_service
+
+    async def _check_tier_limit(self, user_id: int, resource: str, page_count: int = 0) -> str:
+        """Check subscription tier limits for a Telegram user.
+        Returns an error message string if limit exceeded, or empty string if OK."""
+        try:
+            from subscription.tier_guard import check_invoice_limit, check_order_limit, check_page_limit
+            await self._ensure_tenant_manager()
+            if not self.tenant_manager:
+                return ''
+            tenant = await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)
+            if not tenant:
+                return ''
+            user_dict = {
+                'id': str(user_id),
+                'email': tenant.get('email', ''),
+                'invoice_count': tenant.get('invoice_count', 0),
+                'order_count': tenant.get('order_count', 0),
+            }
+            if resource == 'invoices':
+                msg = check_invoice_limit(user_dict)
+                if msg:
+                    return msg
+                if page_count > 0:
+                    msg = check_page_limit(user_dict, page_count)
+                    if msg:
+                        return msg
+            elif resource == 'orders':
+                return check_order_limit(user_dict) or ''
+            return ''
+        except Exception as e:
+            print(f"[BOT] Tier limit check failed (non-blocking): {e}")
+            return ''
+
+    async def _get_main_menu_text(self, user_id: int) -> str:
+        """Build main menu text with usage stats when subscription management is on."""
+        base = "📋 Main Menu\n"
+        try:
+            if not config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                return base + "\nSelect an option:"
+
+            await self._ensure_tenant_manager()
+            if not self.tenant_manager:
+                return base + "\nSelect an option:"
+
+            tenant = await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)
+            if not tenant:
+                return base + "\nSelect an option:"
+
+            from subscription.subscription_config import TIER_PLANS
+            plan_id = tenant.get('subscription_plan') or config.DEFAULT_SUBSCRIPTION_TIER
+            plan = TIER_PLANS.get(plan_id, TIER_PLANS.get('free', {}))
+            plan_name = plan.get('name', plan_id.title())
+
+            inv_used = int(tenant.get('invoice_count', 0) or 0)
+            ord_used = int(tenant.get('order_count', 0) or 0)
+            inv_limit = plan.get('invoice_limit', 0)
+            ord_limit = plan.get('order_limit', 0)
+
+            inv_str = f"{inv_used}" if inv_limit == -1 else f"{inv_used}/{inv_limit}"
+            ord_str = f"{ord_used}" if ord_limit == -1 else f"{ord_used}/{ord_limit}"
+            inv_label = "Unlimited" if inv_limit == -1 else f"{max(inv_limit - inv_used, 0)} left"
+            ord_label = "Unlimited" if ord_limit == -1 else f"{max(ord_limit - ord_used, 0)} left"
+
+            return (
+                f"{base}\n"
+                f"📋 Plan: {plan_name}\n"
+                f"📸 Invoices: {inv_str} ({inv_label})\n"
+                f"📦 Orders: {ord_str} ({ord_label})\n"
+                f"\nSelect an option:"
+            )
+        except Exception as e:
+            print(f"[BOT] Main menu usage text failed (non-blocking): {e}")
+            return base + "\nSelect an option:"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Processing Watchdog — sends timeout warnings during long operations
+    # ═══════════════════════════════════════════════════════════════════
+
+    _WATCHDOG_MESSAGES = {
+        'order': {
+            'warn': (
+                "⏳ We're sorry — this is taking longer than expected.\n\n"
+                "Your order involves multiple AI steps: reading handwritten "
+                "text, matching products with pricing, and generating "
+                "documents. Complex or multi-page orders need more time.\n\n"
+                "We're still working on it — hang tight!"
+            ),
+            'retry': (
+                "⏳ We apologize for the wait — we're automatically "
+                "retrying your order now.\n\n"
+                "No action needed on your end. We'll let you know "
+                "as soon as it's ready."
+            ),
+            'final': (
+                "⏳ We sincerely apologize — this is taking unusually long.\n\n"
+                "Our AI services seem to be under heavy load right now. "
+                "You can cancel, or switch to batch processing for "
+                "background handling."
+            ),
+            'final_no_batch': (
+                "⏳ We sincerely apologize — this is taking unusually long.\n\n"
+                "Our AI services seem to be under heavy load right now. "
+                "You can cancel and try again later, or keep waiting."
+            ),
+        },
+        'invoice': {
+            'warn': (
+                "⏳ We're sorry — this is taking longer than expected.\n\n"
+                "Invoice scanning can take longer when images are blurry, "
+                "the format is unusual, or our servers are under heavy load.\n\n"
+                "We're still working on it — hang tight!"
+            ),
+            'retry': (
+                "⏳ We apologize for the wait — we're automatically "
+                "retrying your invoice now.\n\n"
+                "No action needed on your end. We'll let you know "
+                "as soon as it's ready."
+            ),
+            'final': (
+                "⏳ We sincerely apologize — this is taking unusually long.\n\n"
+                "Our OCR or parsing services seem to be under heavy load. "
+                "You can cancel, or switch to batch processing for "
+                "background handling."
+            ),
+            'final_no_batch': (
+                "⏳ We sincerely apologize — this is taking unusually long.\n\n"
+                "Our OCR or parsing services seem to be under heavy load. "
+                "You can cancel and try again later, or keep waiting."
+            ),
+        },
+    }
+
+    async def _processing_watchdog(
+        self, chat_id: int, user_id: int, processing_task, context, operation: str
+    ):
+        """Background coroutine that warns the user when processing is slow.
+
+        Phases:
+          1. Warn   – apologize, offer Cancel only.
+          2. Retry  – cancel stalled task, restart pipeline automatically.
+          3. Final  – offer Cancel (and Switch to Batch when applicable).
+        """
+        try:
+            if operation == 'order':
+                warn_after = getattr(config, 'ORDER_PROCESSING_WARN_SECONDS', 60)
+                critical_after = getattr(config, 'ORDER_PROCESSING_CRITICAL_SECONDS', 180)
+            else:
+                warn_after = getattr(config, 'INVOICE_PROCESSING_WARN_SECONDS', 45)
+                critical_after = getattr(config, 'INVOICE_PROCESSING_CRITICAL_SECONDS', 120)
+
+            max_retries = getattr(config, 'PROCESSING_MAX_AUTO_RETRIES', 1)
+            final_offer_wait = getattr(config, 'PROCESSING_FINAL_OFFER_SECONDS', 120)
+            messages = self._WATCHDOG_MESSAGES.get(operation, self._WATCHDOG_MESSAGES['invoice'])
+
+            # --- phase 1: first warning ---
+            await asyncio.sleep(warn_after)
+            if processing_task.done():
+                return
+
+            warn_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel_processing")]
+            ])
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=messages['warn'],
+                reply_markup=warn_keyboard,
+            )
+
+            # --- phase 2: auto-retry ---
+            await asyncio.sleep(critical_after - warn_after)
+            if processing_task.done():
+                return
+
+            retry_ctx = self._retry_context.get(user_id, {})
+            retries_done = 0
+
+            while retries_done < max_retries:
+                retries_done += 1
+                print(f"[WATCHDOG] Auto-retry {retries_done}/{max_retries} for user {user_id} ({operation})")
+
+                if not processing_task.done():
+                    processing_task.cancel()
+                    try:
+                        await processing_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+                retry_keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel_processing")]
+                ])
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=messages['retry'],
+                    reply_markup=retry_keyboard,
+                )
+
+                new_task = self._watchdog_restart_pipeline(user_id, retry_ctx)
+                if new_task is None:
+                    break
+                processing_task = new_task
+                self._active_processing_tasks[user_id] = processing_task
+
+                await asyncio.sleep(final_offer_wait)
+                if processing_task.done():
+                    return
+
+            # --- phase 3: final offer ---
+            batch_available = (
+                getattr(config, 'ENABLE_BATCH_MODE', False)
+                and self.batch_manager is not None
+                and operation == 'invoice'
+                and user_id not in self.batch_sessions
+            )
+            if batch_available:
+                final_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📦 Switch to Batch", callback_data="btn_switch_to_batch"),
+                        InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel_processing"),
+                    ]
+                ])
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=messages['final'],
+                    reply_markup=final_keyboard,
+                )
+            else:
+                final_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("⏳ Keep Waiting", callback_data="btn_keep_waiting"),
+                        InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel_processing"),
+                    ]
+                ])
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=messages['final_no_batch'],
+                    reply_markup=final_keyboard,
+                )
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[WATCHDOG] Error in processing watchdog: {e}")
+
+    def _watchdog_restart_pipeline(self, user_id: int, retry_ctx: dict):
+        """Create a new asyncio.Task that re-runs the stalled pipeline.
+
+        Returns the new Task, or None if the context is insufficient.
+        """
+        operation = retry_ctx.get('operation', '')
+        try:
+            if operation == 'invoice':
+                msg = retry_ctx.get('msg')
+                session = retry_ctx.get('session')
+                image_paths = retry_ctx.get('image_paths')
+                if not (msg and session and image_paths):
+                    return None
+                return asyncio.create_task(
+                    self._run_invoice_pipeline(msg, user_id, session, image_paths)
+                )
+            elif operation == 'order':
+                order_session = retry_ctx.get('order_session')
+                order_orchestrator = retry_ctx.get('order_orchestrator')
+                update = retry_ctx.get('update')
+                output_format = retry_ctx.get('output_format', 'pdf')
+                if not (order_session and order_orchestrator and update):
+                    return None
+                order_session._status = 'submitted'
+                return asyncio.create_task(
+                    order_orchestrator.process_order(
+                        order_session, update, output_format=output_format
+                    )
+                )
+        except Exception as e:
+            print(f"[WATCHDOG] Failed to restart pipeline: {e}")
+        return None
+
+    # ═══════════════════════════════════════════════════════════════════
+
+    _FEATURE_NAME_ABBREV = {
+        "Invoices per month": "Invoices/mo",
+        "Orders per month": "Orders/mo",
+        "Max pages per invoice": "Pages/invoice",
+        "Invoice history": "History",
+        "GST OCR & extraction": "GST OCR",
+        "Line item parsing": "Line items",
+        "Basic GST validation": "Basic validation",
+        "Advanced GST validation": "Adv. validation",
+        "Google Sheets sync": "Sheets sync",
+        "Duplicate detection": "Duplicates",
+        "Confidence scoring": "Confidence",
+        "Manual corrections": "Corrections",
+        "Auto-learning corrections": "Auto-learn",
+        "Invoice categorization": "Categorization",
+        "GSTR-1 export": "GSTR-1",
+        "GSTR-3B summary": "GSTR-3B",
+        "CSV download": "CSV export",
+        "Bulk / batch upload": "Batch upload",
+        "Audit logs": "Audit logs",
+        "Version history": "Versioning",
+        "Role-based access": "Role access",
+        "Monthly/quarterly reports": "Reports",
+        "Priority support": "Priority support",
+    }
+
+    _FEATURE_VAL_ABBREV = {
+        "Unlimited": "Unlim.",
+        "6 months": "6 mo",
+        "Manual + batch (limited)": "Batch",
+        "ZIP batch, priority": "ZIP",
+        "Multiple": "Multi",
+        "limited": "Ltd",
+    }
+
+    def _render_feature_page(self, group: str, page_num: int, total_pages: int) -> str:
+        """Build a monospace-formatted feature comparison table for one group."""
+        from subscription.subscription_config import DETAILED_FEATURE_MATRIX
+
+        rows = [r for r in DETAILED_FEATURE_MATRIX if r.get('group') == group]
+        name_w = 17
+        col_w = 7
+
+        def _abbrev_name(n):
+            return self._FEATURE_NAME_ABBREV.get(n, n)[:name_w]
+
+        def _abbrev_val(v):
+            if v is True:
+                return "Yes"
+            if v is False:
+                return "--"
+            s = str(v)
+            return self._FEATURE_VAL_ABBREV.get(s, s)[:col_w]
+
+        hdr = (
+            f"{'Feature':<{name_w}}"
+            f" {'Free':^{col_w}}"
+            f" {'Basic':^{col_w}}"
+            f" {'Prem.':^{col_w}}"
         )
+        sep = "─" * (name_w + (col_w + 1) * 3)
+
+        lines = [
+            f"📋 Feature Comparison ({page_num}/{total_pages})",
+            "",
+            f"<pre>",
+            hdr,
+            sep,
+        ]
+
+        for r in rows:
+            n = _abbrev_name(r['name'])
+            f_val = _abbrev_val(r.get('free', ''))
+            b_val = _abbrev_val(r.get('basic', ''))
+            p_val = _abbrev_val(r.get('premium', ''))
+            lines.append(
+                f"{n:<{name_w}}"
+                f" {f_val:^{col_w}}"
+                f" {b_val:^{col_w}}"
+                f" {p_val:^{col_w}}"
+            )
+
+        lines.append("</pre>")
+        return "\n".join(lines)
     # ═══════════════════════════════════════════════════════════════════
 
     async def handle_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -611,15 +1176,32 @@ class GSTScannerBot:
         
         callback_data = query.data
         user_id = update.effective_user.id
-        
+
+        try:
+            await self._route_menu_callback(query, callback_data, user_id, update, context)
+        except Exception as e:
+            print(f"[ERROR] Callback handler failed for '{callback_data}': {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await query.edit_message_text(
+                    f"⚠️ Something went wrong.\n\nPlease try again.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            except Exception:
+                pass
+
+    async def _route_menu_callback(self, query, callback_data, user_id, update, context):
+        """Route callback data to the appropriate handler."""
+
         # ═══════════════════════════════════════════════════════
         # MAIN MENU NAVIGATION
         # ═══════════════════════════════════════════════════════
         
         if callback_data == "menu_main":
-            # Return to main menu
+            # Return to main menu with usage stats
             await query.edit_message_text(
-                "📋 Main Menu\n\nSelect an option:",
+                await self._get_main_menu_text(user_id),
                 reply_markup=self.create_main_menu_keyboard()
             )
         
@@ -633,7 +1215,7 @@ class GSTScannerBot:
                         InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_upload"),
                         InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_upload"),
                     ],
-                    [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+                    [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
                 ])
                 await query.edit_message_text(
                     "📸 Purchase Order\n\n"
@@ -705,7 +1287,8 @@ class GSTScannerBot:
         elif callback_data == "menu_batch_upload":
             if not config.ENABLE_BATCH_MODE:
                 await query.edit_message_text(
-                    "Batch mode is not enabled.",
+                    "❌ Batch mode is not enabled.\n\n"
+                    "Contact your admin to enable this feature.",
                     reply_markup=self.create_main_menu_keyboard()
                 )
                 return
@@ -739,7 +1322,14 @@ class GSTScannerBot:
             batch_session = self.batch_sessions.get(user_id)
             if not batch_session or not batch_session['images']:
                 await query.edit_message_text(
-                    "No images to submit. Send invoice photos first, then tap Submit Batch.",
+                    "No images to submit yet.\n\n"
+                    "Send invoice photos first, then tap Submit Batch.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("✅ Submit Batch", callback_data="btn_submit_batch"),
+                            InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                        ]
+                    ])
                 )
                 return
             await query.edit_message_text("Queuing your batch...")
@@ -756,7 +1346,7 @@ class GSTScannerBot:
                         InlineKeyboardButton("📋 Batch Status", callback_data=f"bst_{record.token_id}"),
                         InlineKeyboardButton("❌ Cancel Batch", callback_data=f"bca_{record.token_id}"),
                     ],
-                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+                    [InlineKeyboardButton("◀ Back to Menu", callback_data="menu_main")],
                 ])
                 await update.effective_message.reply_text(
                     f"✅ Batch queued!\n\n"
@@ -838,10 +1428,16 @@ class GSTScannerBot:
                 )
                 return
             
-            # Cancel any existing invoice session
+            # Clear any stale sessions to prevent state conflicts
             if user_id in self.user_sessions:
                 print(f"[DEBUG] Clearing existing invoice session for user {user_id}")
                 del self.user_sessions[user_id]
+            if user_id in self.order_sessions:
+                print(f"[DEBUG] Clearing stale order session for user {user_id}")
+                del self.order_sessions[user_id]
+            if user_id in self.batch_sessions:
+                print(f"[DEBUG] Clearing stale batch session for user {user_id}")
+                del self.batch_sessions[user_id]
             
             # Tier 4: Show mode selection when batch mode is enabled
             if config.ENABLE_BATCH_MODE:
@@ -850,7 +1446,7 @@ class GSTScannerBot:
                         InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_order_upload"),
                         InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_order_upload"),
                     ],
-                    [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+                    [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
                 ])
                 await query.edit_message_text(
                     "📦 Sales Order\n\n"
@@ -902,7 +1498,12 @@ class GSTScannerBot:
             if config.FEATURE_ORDER_UPLOAD_NORMALIZATION and user_id in self.order_sessions:
                 order_session = self.order_sessions[user_id]
                 if not order_session.pages:
-                    await query.edit_message_text("❌ No pages uploaded yet. Send photos first.")
+                    await query.edit_message_text(
+                        "❌ No pages uploaded yet.\n\nSend photos first, then submit.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                        ])
+                    )
                     return
                 # Ask user for output format
                 keyboard = InlineKeyboardMarkup([
@@ -932,13 +1533,114 @@ class GSTScannerBot:
             # Trigger the done command logic
             session = self._get_user_session(user_id)
             if not session['images']:
-                await query.edit_message_text("Hmm, no images found. Send me a photo first!")
+                await query.edit_message_text(
+                    "No images found yet. Send me a photo first!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                    ])
+                )
                 return
             # Delegate to done_command — create a fake text message context
             await self.done_command(update, context)
             return
-        
+
+        # ═══════════════════════════════════════════════════════
+        # PROCESSING WATCHDOG BUTTONS
+        # ═══════════════════════════════════════════════════════
+        elif callback_data == "btn_cancel_processing":
+            task = self._active_processing_tasks.get(user_id)
+            if task and not task.done():
+                task.cancel()
+            if user_id in self.order_sessions:
+                del self.order_sessions[user_id]
+            if user_id in self.user_sessions:
+                self._clear_user_session(user_id)
+            if user_id in self.batch_sessions:
+                del self.batch_sessions[user_id]
+            self._retry_context.pop(user_id, None)
+            try:
+                await query.edit_message_text(
+                    "✅ Processing cancelled."
+                )
+            except Exception:
+                pass
+            await update.effective_message.reply_text(
+                await self._get_main_menu_text(user_id),
+                reply_markup=self.create_main_menu_keyboard()
+            )
+            return
+
+        elif callback_data == "btn_keep_waiting":
+            try:
+                await query.edit_message_text(
+                    "👍 Got it — still working on your request. "
+                    "We'll let you know as soon as it's done!"
+                )
+            except Exception:
+                pass
+            return
+
+        elif callback_data == "btn_switch_to_batch":
+            if not getattr(config, 'ENABLE_BATCH_MODE', False) or self.batch_manager is None:
+                await query.edit_message_text(
+                    "❌ Batch mode is not available right now.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            task = self._active_processing_tasks.pop(user_id, None)
+            if task and not task.done():
+                task.cancel()
+            retry_ctx = self._retry_context.pop(user_id, {})
+            session = self.user_sessions.get(user_id, {})
+            image_paths = retry_ctx.get('image_paths') or session.get('images', [])
+            if not image_paths:
+                await query.edit_message_text(
+                    "No images found to queue.\n\n"
+                    "Please upload your invoices again.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+                return
+            try:
+                await query.edit_message_text("📦 Switching to batch processing...")
+                record = self.batch_manager.create_batch(
+                    user_id=str(user_id),
+                    username=update.effective_user.username or '',
+                    invoice_paths=image_paths,
+                    business_type='Purchase',
+                )
+                if user_id in self.user_sessions:
+                    self._clear_user_session(user_id)
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📋 Batch Status", callback_data=f"bst_{record.token_id}"),
+                        InlineKeyboardButton("❌ Cancel Batch", callback_data=f"bca_{record.token_id}"),
+                    ],
+                    [InlineKeyboardButton("◀ Back to Menu", callback_data="menu_main")],
+                ])
+                await update.effective_message.reply_text(
+                    f"✅ Switched to batch processing!\n\n"
+                    f"Token: {record.token_id}\n"
+                    f"Invoices: {record.total_invoices}\n\n"
+                    f"Your images are queued for background processing. "
+                    f"You'll be notified when they're done.",
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                print(f"[WATCHDOG] Failed to switch to batch: {e}")
+                await update.effective_message.reply_text(
+                    f"Failed to queue batch: {str(e)}\n\nPlease try again.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            return
+
+        # ═══════════════════════════════════════════════════════
+
         elif callback_data == "btn_cancel":
+            # Cancel any active processing task first
+            task = self._active_processing_tasks.pop(user_id, None)
+            if task and not task.done():
+                task.cancel()
+            self._retry_context.pop(user_id, None)
             # Clear order, invoice, and batch sessions
             cancelled = False
             if user_id in self.order_sessions:
@@ -950,15 +1652,15 @@ class GSTScannerBot:
             if user_id in self.batch_sessions:
                 del self.batch_sessions[user_id]
                 cancelled = True
+            menu_text = await self._get_main_menu_text(user_id)
             if cancelled:
                 await query.edit_message_text(
-                    "All cleared! What's next? 👇",
+                    f"✅ All cleared!\n\n{menu_text}",
                     reply_markup=self.create_main_menu_keyboard()
                 )
             else:
                 await query.edit_message_text(
-                    "Nothing active to cancel.\n\n"
-                    "What would you like to do?",
+                    menu_text,
                     reply_markup=self.create_main_menu_keyboard()
                 )
             return
@@ -1090,8 +1792,8 @@ class GSTScannerBot:
                     InlineKeyboardButton("💾 Save Corrections", callback_data="btn_save_corrections"),
                 ],
                 [
-                    InlineKeyboardButton("↩️ Cancel Correction", callback_data="btn_cancel_correction"),
-                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                    InlineKeyboardButton("◀ Cancel Correction", callback_data="btn_cancel_correction"),
+                    InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
                 ]
             ])
             await query.edit_message_text(instructions, reply_markup=correction_keyboard)
@@ -1120,7 +1822,7 @@ class GSTScannerBot:
                     InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
                 ],
                 [
-                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                    InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
                 ]
             ])
             await query.edit_message_text(
@@ -1155,7 +1857,7 @@ class GSTScannerBot:
                         InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
                     ],
                     [
-                        InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                        InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
                     ]
                 ])
                 await query.edit_message_text(review_msg, reply_markup=review_keyboard)
@@ -1179,41 +1881,65 @@ class GSTScannerBot:
                     InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
                     InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"),
                 ],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await query.edit_message_text(
-                "🗑 Invoice discarded — fresh start!\n\n"
+                "✅ Invoice discarded — fresh start!\n\n"
                 "Ready to try again?",
                 reply_markup=upload_keyboard
             )
             return
-        
-        elif callback_data == "menu_upload":
-            await query.edit_message_text(
-                "📸 Ready to scan!\n\n"
-                "Send me a photo of your invoice.\n"
-                "Multi-page? Just send all pages one by one.\n\n"
-                "I'll wait for all your images before processing."
-            )
+
+        elif callback_data == "btn_resubmit_pages":
+            if user_id in self.order_sessions:
+                del self.order_sessions[user_id]
+                order_session = OrderSession(user_id, update.effective_user.username)
+                self.order_sessions[user_id] = order_session
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                ])
+                await query.edit_message_text(
+                    "🔄 Order cleared — send your pages again.\n\n"
+                    "Upload fewer pages this time to stay within your plan limit.\n\n"
+                    "📌 Send me photos of the order pages, then tap ✅ Submit Order.",
+                    reply_markup=keyboard
+                )
+            elif user_id in self.user_sessions:
+                session = self.user_sessions[user_id]
+                for img_path in session.get('images', []):
+                    try:
+                        if os.path.exists(img_path):
+                            os.remove(img_path)
+                    except OSError:
+                        pass
+                session['images'] = []
+                session['state'] = 'uploading'
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Process Invoice", callback_data="btn_done"),
+                        InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel"),
+                    ]
+                ])
+                await query.edit_message_text(
+                    "🔄 Pages cleared — send your invoice images again.\n\n"
+                    "Upload fewer pages this time to stay within your plan limit.",
+                    reply_markup=keyboard
+                )
+            else:
+                upload_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
+                        InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"),
+                    ],
+                    [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
+                ])
+                await query.edit_message_text(
+                    "Your session expired.\n\nTap below to start a new upload.",
+                    reply_markup=upload_keyboard
+                )
             return
         
-        elif callback_data == "menu_help":
-            await query.edit_message_text(
-                "Need a hand? Here's a quick overview:\n\n"
-                "📸 Upload Invoice — Send photos, I extract GST data\n"
-                "📦 Sales Order — Send handwritten orders for PDF\n"
-                "📊 Generate — GSTR-1, GSTR-3B, reports & stats\n\n"
-                "The fastest way to start? Just send me a photo!",
-                reply_markup=self.create_main_menu_keyboard()
-            )
-            return
         
-        elif callback_data == "menu_main":
-            await query.edit_message_text(
-                "What would you like to do? 👇",
-                reply_markup=self.create_main_menu_keyboard()
-            )
-            return
         
         elif callback_data == "btn_next":
             # Batch mode: save current invoice and start next
@@ -1226,7 +1952,7 @@ class GSTScannerBot:
                 batch_num = len(session['batch']) + 1
                 keyboard = InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("⏭ Next Invoice", callback_data="btn_next"),
+                        InlineKeyboardButton("▶ Next Invoice", callback_data="btn_next"),
                         InlineKeyboardButton("✅ Process All", callback_data="btn_done"),
                     ],
                     [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
@@ -1238,18 +1964,304 @@ class GSTScannerBot:
                     reply_markup=keyboard
                 )
             else:
-                await query.edit_message_text("No pages yet — send me some photos first!")
+                await query.edit_message_text(
+                    "No pages yet -- send me some photos first!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                    ])
+                )
             return
         # ═══════════════════════════════════════════════════════
         
         # ═══════════════════════════════════════════════════════
-        # Epic 3: SUBSCRIPTION TIER SELECTION
+        # Epic 3: SUBSCRIPTION MENU & TIER SELECTION
         # ═══════════════════════════════════════════════════════
+        elif callback_data == "menu_subscribe":
+            await self._ensure_tenant_manager()
+            if self.tenant_manager:
+                tenant = await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)
+                if not tenant:
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Get Started", callback_data="menu_main")]
+                    ])
+                    await query.edit_message_text(
+                        "You need to register first. Tap below to get started.",
+                        reply_markup=keyboard
+                    )
+                    return
+                current_plan = tenant.get('subscription_plan', config.DEFAULT_SUBSCRIPTION_TIER)
+
+                if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                    await self._show_subscription_plans_enhanced(query, user_id, current_plan, tenant)
+                else:
+                    inv_count = tenant.get('invoice_count', '0')
+                    ord_count = tenant.get('order_count', '0')
+                    buttons = []
+                    for tier in config.SUBSCRIPTION_TIERS:
+                        label = tier['name']
+                        if tier['id'] == current_plan:
+                            label = f"✅ {tier['name']} (current)"
+                        else:
+                            label = f"💳 {tier['name']}"
+                        buttons.append([
+                            InlineKeyboardButton(
+                                f"{label} -- {tier['description']}",
+                                callback_data=f"subscribe_{tier['id']}"
+                            )
+                        ])
+                    buttons.append([InlineKeyboardButton("📋 View Features", callback_data="subscribe_features")])
+                    buttons.append([InlineKeyboardButton("◀ Back", callback_data="menu_main")])
+                    await query.edit_message_text(
+                        "💳 Subscription Plans\n\n"
+                        f"Your current plan: {current_plan.title()}\n"
+                        f"Invoices used: {inv_count}\n"
+                        f"Orders used: {ord_count}\n\n"
+                        "Select a plan below:",
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+            else:
+                await query.edit_message_text(
+                    "❌ Subscription service is temporarily unavailable.",
+                    reply_markup=self.create_main_menu_keyboard()
+                )
+            return
+
+        elif callback_data in ("subscribe_features", "subscribe_features_limits"):
+            text = self._render_feature_page("Limits", 1, 2)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Features (2/2) ▶", callback_data="subscribe_features_list")],
+                [InlineKeyboardButton("◀ Back to Plans", callback_data="menu_subscribe")]
+            ])
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
+            return
+
+        elif callback_data == "subscribe_features_list":
+            text = self._render_feature_page("Features", 2, 2)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀ Limits (1/2)", callback_data="subscribe_features_limits")],
+                [InlineKeyboardButton("◀ Back to Plans", callback_data="menu_subscribe")]
+            ])
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
+            return
+
+        elif callback_data.startswith("subscribe_pay_"):
+            parts = callback_data[len("subscribe_pay_"):].rsplit("_", 1)
+            tier_id = parts[0]
+            billing_period = parts[1] if len(parts) > 1 else "monthly"
+
+            if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                service = self._get_subscription_service()
+                if not service:
+                    await query.edit_message_text(
+                        "❌ Payment service unavailable. Please try again later.",
+                        reply_markup=self.create_main_menu_keyboard()
+                    )
+                    return
+                await self._ensure_tenant_manager()
+                tenant = (await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)) if self.tenant_manager else None
+                current_plan = tenant.get('subscription_plan', 'free') if tenant else 'free'
+                email = tenant.get('email', '') if tenant else ''
+                try:
+                    from subscription.subscription_config import TIER_PLANS
+                    if service.razorpay:
+                        result = await asyncio.to_thread(
+                            service.initiate_upgrade_link,
+                            user_id=str(user_id),
+                            email=email,
+                            current_tier=current_plan,
+                            target_tier=tier_id,
+                            billing_period=billing_period,
+                            tenant_id=tenant.get('tenant_id', '') if tenant else '',
+                        )
+                        payment_url = result.get('short_url', '')
+                        amount = result.get('amount', 0)
+                        plan_name = TIER_PLANS.get(tier_id, {}).get('name', tier_id.title())
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton(f"💳 Pay ₹{amount}", url=payment_url)],
+                            [InlineKeyboardButton("◀ Back to Plans", callback_data="menu_subscribe")]
+                        ])
+                        await query.edit_message_text(
+                            f"💳 *Upgrade to {plan_name}*\n\n"
+                            f"Amount: ₹{amount} ({billing_period})\n\n"
+                            f"Tap the button below to complete payment via Razorpay.\n"
+                            f"After payment, your plan will be activated automatically.",
+                            parse_mode='Markdown',
+                            reply_markup=keyboard
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            service.activate_without_payment,
+                            user_id=str(user_id),
+                            email=email,
+                            current_tier=current_plan,
+                            target_tier=tier_id,
+                            billing_period=billing_period,
+                            tenant_id=tenant.get('tenant_id', '') if tenant else '',
+                        )
+                        plan_name = TIER_PLANS.get(tier_id, {}).get('name', tier_id.title())
+                        expires = result.get('expires_at', '')[:10]
+                        keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("◀ Back to Plans", callback_data="menu_subscribe")],
+                            [InlineKeyboardButton("◀ Main Menu", callback_data="menu_main")]
+                        ])
+                        await query.edit_message_text(
+                            f"✅ *Plan upgraded to {plan_name}!*\n\n"
+                            f"Billing: {billing_period.capitalize()}\n"
+                            f"Expires: {expires}\n\n"
+                            f"Your new plan is now active.",
+                            parse_mode='Markdown',
+                            reply_markup=keyboard
+                        )
+                except ValueError as e:
+                    await query.edit_message_text(
+                        f"❌ {str(e)}", reply_markup=self.create_main_menu_keyboard()
+                    )
+            return
+
+        elif callback_data.startswith("subscribe_downgrade_confirm_"):
+            tier_id = callback_data[len("subscribe_downgrade_confirm_"):]
+            if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                service = self._get_subscription_service()
+                if not service:
+                    await query.edit_message_text(
+                        "❌ Service unavailable.", reply_markup=self.create_main_menu_keyboard()
+                    )
+                    return
+                await self._ensure_tenant_manager()
+                tenant = (await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)) if self.tenant_manager else None
+                current_plan = tenant.get('subscription_plan', 'free') if tenant else 'free'
+                email = tenant.get('email', '') if tenant else ''
+                try:
+                    result = await asyncio.to_thread(
+                        service.initiate_downgrade,
+                        user_id=str(user_id),
+                        email=email,
+                        current_tier=current_plan,
+                        target_tier=tier_id,
+                        tenant_id=tenant.get('tenant_id', '') if tenant else '',
+                    )
+                    from subscription.subscription_config import TIER_PLANS
+                    plan_name = TIER_PLANS.get(tier_id, {}).get('name', tier_id.title())
+                    effective = result.get('effective_date', '')
+                    msg = f"✅ Downgrade to {plan_name} scheduled."
+                    if effective:
+                        msg += f"\nEffective: {effective[:10]}"
+                    await query.edit_message_text(
+                        msg, reply_markup=self.create_main_menu_keyboard()
+                    )
+                except ValueError as e:
+                    await query.edit_message_text(
+                        f"❌ {str(e)}", reply_markup=self.create_main_menu_keyboard()
+                    )
+            return
+
+        elif callback_data.startswith("subscribe_downgrade_"):
+            tier_id = callback_data[len("subscribe_downgrade_"):]
+            if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                from subscription.subscription_config import TIER_PLANS
+                plan_name = TIER_PLANS.get(tier_id, {}).get('name', tier_id.title())
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        f"✅ Yes, downgrade to {plan_name}",
+                        callback_data=f"subscribe_downgrade_confirm_{tier_id}"
+                    )],
+                    [InlineKeyboardButton("◀ Back to Plans", callback_data="menu_subscribe")]
+                ])
+                await query.edit_message_text(
+                    f"⚠️ Downgrade to {plan_name}?\n\n"
+                    f"You may lose access to features on your current plan.\n"
+                    f"Downgrade takes effect at the end of your billing period.",
+                    reply_markup=keyboard
+                )
+            return
+
+        elif callback_data == "subscribe_history":
+            if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                service = self._get_subscription_service()
+                if not service:
+                    await query.edit_message_text(
+                        "❌ Service unavailable.", reply_markup=self.create_main_menu_keyboard()
+                    )
+                    return
+                await self._ensure_tenant_manager()
+                tenant = (await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)) if self.tenant_manager else None
+                email = tenant.get('email', '') if tenant else ''
+                txns = await asyncio.to_thread(service.get_transactions, user_id=str(user_id), email=email, limit=5)
+                if not txns:
+                    text = "🧾 *Transaction History*\n\nNo transactions yet."
+                else:
+                    lines = ["🧾 *Transaction History*\n"]
+                    for t in txns:
+                        date = t.get('created_at', '')[:10] if t.get('created_at') else '—'
+                        amount = f"₹{t.get('amount', 0)}" if t.get('amount', 0) > 0 else "Free"
+                        status_icon = "✅" if t.get('status') == 'paid' else ("❌" if t.get('status') == 'failed' else "⏳")
+                        lines.append(
+                            f"{status_icon} {date} | {t.get('plan_from', '?')} → {t.get('plan_to', '?')} | {amount}"
+                        )
+                    lines.append("\n_Showing last 5 transactions_")
+                    text = "\n".join(lines)
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀ Back to Plans", callback_data="menu_subscribe")]
+                ])
+                await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
+            return
+
+        elif callback_data == "subscribe_cancel":
+            if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "❌ Yes, cancel my subscription",
+                        callback_data="subscribe_cancel_confirm"
+                    )],
+                    [InlineKeyboardButton("◀ Back to Plans", callback_data="menu_subscribe")]
+                ])
+                await query.edit_message_text(
+                    "⚠️ Cancel your subscription?\n\n"
+                    "This will immediately downgrade you to the Free plan.\n"
+                    "You'll lose access to paid features right away.\n\n"
+                    "Contact support for refund requests.",
+                    reply_markup=keyboard
+                )
+            return
+
+        elif callback_data == "subscribe_cancel_confirm":
+            if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+                service = self._get_subscription_service()
+                if not service:
+                    await query.edit_message_text(
+                        "❌ Service unavailable.", reply_markup=self.create_main_menu_keyboard()
+                    )
+                    return
+                await self._ensure_tenant_manager()
+                tenant = (await asyncio.to_thread(self.tenant_manager.get_tenant, user_id)) if self.tenant_manager else None
+                current_plan = tenant.get('subscription_plan', 'free') if tenant else 'free'
+                email = tenant.get('email', '') if tenant else ''
+                try:
+                    result = await asyncio.to_thread(
+                        service.cancel_subscription,
+                        user_id=str(user_id),
+                        email=email,
+                        current_tier=current_plan,
+                        tenant_id=tenant.get('tenant_id', '') if tenant else '',
+                    )
+                    await query.edit_message_text(
+                        f"✅ Subscription cancelled.\n\n"
+                        f"Previous plan: {result.get('previous_plan_name', current_plan.title())}\n"
+                        f"Current plan: Free\n\n"
+                        f"Contact support for refund requests.",
+                        reply_markup=self.create_main_menu_keyboard()
+                    )
+                except ValueError as e:
+                    await query.edit_message_text(
+                        f"❌ {str(e)}", reply_markup=self.create_main_menu_keyboard()
+                    )
+            return
+
         elif callback_data.startswith("subscribe_"):
             tier_id = callback_data[len("subscribe_"):]
-            self._ensure_tenant_manager()
+            await self._ensure_tenant_manager()
             if self.tenant_manager:
-                success = self.tenant_manager.update_subscription(user_id, tier_id)
+                success = await asyncio.to_thread(self.tenant_manager.update_subscription, user_id, tier_id)
                 if success:
                     tier_name = tier_id.title()
                     for tier in config.SUBSCRIPTION_TIERS:
@@ -1263,13 +2275,13 @@ class GSTScannerBot:
                     )
                 else:
                     await query.edit_message_text(
-                        "😕 Couldn't update your subscription.\n\n"
+                        "❌ Couldn't update your subscription.\n\n"
                         "Please try again.",
                         reply_markup=self.create_main_menu_keyboard()
                     )
             else:
                 await query.edit_message_text(
-                    "😕 Subscription service is temporarily unavailable.",
+                    "❌ Subscription service is temporarily unavailable.",
                     reply_markup=self.create_main_menu_keyboard()
                 )
             return
@@ -1304,7 +2316,7 @@ class GSTScannerBot:
                     InlineKeyboardButton("❌ Cancel Batch", callback_data=f"bca_{token_id}"),
                 ],
                 [InlineKeyboardButton("📋 All Batches", callback_data="menu_my_batches")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+                [InlineKeyboardButton("◀ Back to Menu", callback_data="menu_main")],
             ]
             await query.edit_message_text(
                 f"📋 Batch Status\n\n{detail}",
@@ -1327,7 +2339,7 @@ class GSTScannerBot:
                 error_msg = result.get('error', 'Unknown error')
                 buttons = [
                     [InlineKeyboardButton("🔄 Refresh Status", callback_data=f"bst_{token_id}")],
-                    [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+                    [InlineKeyboardButton("◀ Back to Menu", callback_data="menu_main")],
                 ]
                 await query.edit_message_text(
                     f"Cannot cancel: {error_msg}",
@@ -1364,7 +2376,7 @@ class GSTScannerBot:
             
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("⏭ Next Invoice", callback_data="btn_next"),
+                    InlineKeyboardButton("▶ Next Invoice", callback_data="btn_next"),
                     InlineKeyboardButton("✅ Process All", callback_data="btn_done"),
                 ],
                 [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
@@ -1372,7 +2384,7 @@ class GSTScannerBot:
             await query.edit_message_text(
                 "📦 Batch mode — ready for multiple invoices!\n\n"
                 "1. Send pages for the first invoice\n"
-                "2. Tap ⏭ Next Invoice\n"
+                "2. Tap ▶ Next Invoice\n"
                 "3. Repeat for each invoice\n"
                 "4. Tap ✅ Process All when done\n\n"
                 "Great for processing several invoices at once.",
@@ -1399,40 +2411,34 @@ class GSTScannerBot:
         # ═══════════════════════════════════════════════════════
         
         elif callback_data == "gen_gstr1":
-            session = self._get_user_session(user_id)
-            session['export_command'] = 'gstr1'
-            session['export_step'] = 'month'
             await query.edit_message_text(
                 "📄 GSTR-1 Export\n\n"
-                "Enter the month (1-12):"
+                "Select the month:",
+                reply_markup=self.create_month_picker("gstr1")
             )
         
         elif callback_data == "gen_gstr3b":
-            session = self._get_user_session(user_id)
-            session['export_command'] = 'gstr3b'
-            session['export_step'] = 'month'
             await query.edit_message_text(
                 "📋 GSTR-3B Summary\n\n"
-                "Enter the month (1-12):"
+                "Select the month:",
+                reply_markup=self.create_month_picker("gstr3b")
             )
         
         elif callback_data == "gen_reports":
-            session = self._get_user_session(user_id)
-            session['export_command'] = 'reports'
-            session['export_step'] = 'type'
             await query.edit_message_text(
                 "📈 Operational Reports\n\n"
-                "Select report type:\n"
-                "1️⃣ Processing Statistics\n"
-                "2️⃣ GST Summary (monthly)\n"
-                "3️⃣ Duplicate Attempts\n"
-                "4️⃣ Correction Analysis\n"
-                "5️⃣ Comprehensive Report\n\n"
-                "Reply with number (1-5):"
+                "Select report type:",
+                reply_markup=self.create_report_type_picker()
             )
         
         elif callback_data == "gen_stats":
             await query.edit_message_text("📊 Generating statistics...")
+            nav_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📊 Reports & Exports", callback_data="menu_generate"),
+                    InlineKeyboardButton("📋 Main Menu", callback_data="menu_main"),
+                ]
+            ])
             try:
                 result = self.tier3_handlers.reporter.generate_processing_stats()
                 if result['success']:
@@ -1446,19 +2452,157 @@ class GSTScannerBot:
                         message += "\n⚠️ TOP ERRORS\n"
                         for error in result['top_errors'][:3]:
                             message += f"  • {error['type']}: {error['count']}\n"
-                    await query.message.reply_text(message)
+                    await query.message.reply_text(message, reply_markup=nav_keyboard)
                 else:
-                    await query.message.reply_text(f"❌ {result['message']}")
+                    await query.message.reply_text(f"❌ {result['message']}", reply_markup=nav_keyboard)
             except Exception as e:
-                await query.message.reply_text(f"❌ Error: {str(e)}")
+                await query.message.reply_text(f"❌ Error: {str(e)}", reply_markup=nav_keyboard)
         
+        # ═══════════════════════════════════════════════════════
+        # MONTH / YEAR / TYPE PICKER CALLBACKS
+        # ═══════════════════════════════════════════════════════
+
+        elif callback_data.startswith("month_"):
+            from calendar import month_name as _mn
+            parts = callback_data.split("_")
+            cmd_prefix = parts[1]
+            month_num = int(parts[2])
+            if cmd_prefix == "stats":
+                session = self._get_user_session(user_id)
+                session['export_command'] = 'reports'
+                session['report_type'] = '5'
+                session['export_month'] = month_num
+                session['export_step'] = 'year'
+                await query.edit_message_text(
+                    f"📊 Detailed Reports\n\n"
+                    f"Month: {_mn[month_num]}\n\n"
+                    f"Select the year:",
+                    reply_markup=self.create_year_picker(cmd_prefix, month_num)
+                )
+            else:
+                session = self._get_user_session(user_id)
+                session['export_command'] = cmd_prefix
+                session['export_month'] = month_num
+                session['export_step'] = 'year'
+                if cmd_prefix == "gstr1":
+                    label = "📄 GSTR-1 Export"
+                elif cmd_prefix == "gstr3b":
+                    label = "📋 GSTR-3B Summary"
+                else:
+                    label = "📈 Operational Reports"
+                await query.edit_message_text(
+                    f"{label}\n\n"
+                    f"Month: {_mn[month_num]}\n\n"
+                    f"Select the year:",
+                    reply_markup=self.create_year_picker(cmd_prefix, month_num)
+                )
+            return
+
+        elif callback_data.startswith("year_"):
+            from calendar import month_name as _mn
+            parts = callback_data.split("_")
+            cmd_prefix = parts[1]
+            month_num = int(parts[2])
+            year_num = int(parts[3])
+            session = self._get_user_session(user_id)
+            session['export_month'] = month_num
+            session['export_year'] = year_num
+            if cmd_prefix == "gstr1":
+                session['export_command'] = 'gstr1'
+                session['export_step'] = 'type'
+                await query.edit_message_text(
+                    f"📄 GSTR-1 Export\n\n"
+                    f"Period: {_mn[month_num]} {year_num}\n\n"
+                    f"Select export type:",
+                    reply_markup=self.create_gstr1_type_picker(month_num, year_num)
+                )
+            elif cmd_prefix == "gstr3b":
+                session['export_command'] = 'gstr3b'
+                session['export_step'] = None
+                await query.edit_message_text(
+                    f"📋 GSTR-3B Summary\n\n"
+                    f"Period: {_mn[month_num]} {year_num}\n\n"
+                    f"⏳ Generating export..."
+                )
+                await self.tier3_handlers._execute_export(
+                    update, session
+                )
+            elif cmd_prefix == "stats":
+                session['export_command'] = 'reports'
+                session['report_type'] = '5'
+                session['export_step'] = None
+                await query.edit_message_text(
+                    f"📊 Detailed Reports\n\n"
+                    f"Period: {_mn[month_num]} {year_num}\n\n"
+                    f"⏳ Generating comprehensive report..."
+                )
+                await self.tier3_handlers._execute_export(
+                    update, session
+                )
+            elif cmd_prefix.startswith("rpt"):
+                report_num = cmd_prefix[3:]
+                session['export_command'] = 'reports'
+                session['report_type'] = report_num
+                session['export_step'] = None
+                await query.edit_message_text(
+                    f"📈 Generating report...\n\n"
+                    f"Period: {_mn[month_num]} {year_num}\n\n"
+                    f"⏳ Please wait..."
+                )
+                await self.tier3_handlers._execute_export(
+                    update, session
+                )
+            return
+
+        elif callback_data.startswith("gstr1type_"):
+            parts = callback_data.split("_")
+            month_num = int(parts[1])
+            year_num = int(parts[2])
+            type_num = parts[3]
+            session = self._get_user_session(user_id)
+            session['export_command'] = 'gstr1'
+            session['export_month'] = month_num
+            session['export_year'] = year_num
+            session['export_type'] = type_num
+            session['export_step'] = None
+            await query.edit_message_text(
+                "📄 GSTR-1 Export\n\n"
+                "⏳ Generating export..."
+            )
+            await self.tier3_handlers._execute_export(
+                update, session
+            )
+            return
+
+        elif callback_data.startswith("report_type_"):
+            report_num = callback_data.split("_")[2]
+            session = self._get_user_session(user_id)
+            session['export_command'] = 'reports'
+            session['report_type'] = report_num
+            if report_num in ('2', '3', '5'):
+                await query.edit_message_text(
+                    "📈 Operational Reports\n\n"
+                    "Select the month:",
+                    reply_markup=self.create_month_picker(f"rpt{report_num}")
+                )
+            else:
+                session['export_step'] = None
+                await query.edit_message_text(
+                    "📈 Generating report...\n\n"
+                    "⏳ Please wait..."
+                )
+                await self.tier3_handlers._execute_export(
+                    update, session
+                )
+            return
+
         # ═══════════════════════════════════════════════════════
         # HELP SUBMENU ACTIONS
         # ═══════════════════════════════════════════════════════
         
         elif callback_data == "help_start":
             help_text = (
-                "🚀 Getting Started\n"
+                "✅ Getting Started\n"
                 "\n"
                 "It's simple — just 4 steps:\n"
                 "\n"
@@ -1484,7 +2628,7 @@ class GSTScannerBot:
             )
             keyboard = [
                 [InlineKeyboardButton("📤 Upload First Invoice", callback_data="upload_single")],
-                [InlineKeyboardButton("🔙 Back", callback_data="menu_help")]
+                [InlineKeyboardButton("◀ Back", callback_data="menu_help")]
             ]
             await query.edit_message_text(
                 help_text,
@@ -1501,7 +2645,7 @@ class GSTScannerBot:
                 "\n"
                 "Batch mode (multiple invoices):\n"
                 "  1. Send pages for the first invoice\n"
-                "  2. Tap ⏭ Next Invoice\n"
+                "  2. Tap ▶ Next Invoice\n"
                 "  3. Repeat for each invoice\n"
                 "  4. Tap ✅ Process All when finished\n"
                 "\n"
@@ -1550,8 +2694,8 @@ class GSTScannerBot:
                     "  ✅  Save As-Is — keep data as extracted\n"
                     "  ✏️  Make Corrections — edit fields\n"
                     "  💾  Save Corrections — save edits\n"
-                    "  ↩️  Cancel Correction — go back to review\n"
-                    "  🗑  Cancel & Resend — start fresh"
+                    "  ◀  Cancel Correction -- go back to review\n"
+                    "  ❌  Discard & Resend -- start fresh"
                 )
                 await query.edit_message_text(
                     help_text,
@@ -1624,28 +2768,24 @@ class GSTScannerBot:
             )
         
         elif callback_data == "help_contact":
-            help_text = """📞 Contact Support
-
-For Technical Issues:
-Contact your system administrator
-
-For Bot Usage Questions:
-Use the help menu or /help command
-
-For Feature Requests:
-Discuss with your administrator
-
-Bot Information:
-• Features: OCR, Validation, Batch, GSTR, CSV Export
-• Supported: JPG, PNG images
-
-Useful Commands:
-/start - Restart bot & show menu
-/help - Show help information
-/cancel - Cancel current operation
-
-─────────────────────
-🔧 v{version} | {build}""".format(version=config.BOT_VERSION, build=config.BOT_BUILD_NAME)
+            help_text = (
+                "✉ Contact Support\n"
+                "\n"
+                "For Technical Issues:\n"
+                "  Contact your system administrator\n"
+                "\n"
+                "For Bot Usage Questions:\n"
+                "  Use the help menu above\n"
+                "\n"
+                "For Feature Requests:\n"
+                "  Discuss with your administrator\n"
+                "\n"
+                "─────────────────────\n"
+                "📋 Bot Info\n"
+                "  Features: OCR, Validation, Batch, GSTR, CSV\n"
+                "  Supported: JPG, PNG images\n"
+                f"  Version: v{config.BOT_VERSION} | {config.BOT_BUILD_NAME}"
+            )
             await query.edit_message_text(
                 help_text,
                 reply_markup=self.create_help_submenu()
@@ -1700,10 +2840,15 @@ Useful Commands:
                 "From subscription settings you can:\n"
                 "• View your current plan and usage\n"
                 "• Check remaining quota\n"
-                "• Upgrade or change plans\n"
+                "• Compare plan features\n"
+                "• Upgrade via Razorpay (cards, UPI, netbanking)\n"
+                "• Downgrade to a lower plan\n"
+                "• Cancel subscription (immediate downgrade to Free)\n"
+                "• View transaction history\n"
                 "\n"
-                "Contact your administrator for billing\n"
-                "questions or custom plans."
+                "Plans: Free, Basic (₹499/mo), Premium (₹1499/mo)\n"
+                "Downgrades take effect at end of billing period.\n"
+                "Cancellations are immediate; contact support for refunds."
             )
             await query.edit_message_text(
                 help_text,
@@ -1738,6 +2883,12 @@ Useful Commands:
         
         elif callback_data == "stats_quick":
             await query.edit_message_text("📊 Generating quick statistics...")
+            nav_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📊 More Stats", callback_data="menu_usage"),
+                    InlineKeyboardButton("📋 Main Menu", callback_data="menu_main"),
+                ]
+            ])
             try:
                 result = self.tier3_handlers.reporter.generate_processing_stats()
                 if result['success']:
@@ -1747,25 +2898,21 @@ Useful Commands:
                     for status, count in result['status_breakdown'].items():
                         pct = result['status_percentages'].get(status, 0)
                         message += f"  {status}: {count} ({pct:.1f}%)\n"
-                    await query.message.reply_text(message)
+                    await query.message.reply_text(message, reply_markup=nav_keyboard)
                 else:
-                    await query.message.reply_text(f"❌ {result['message']}")
+                    await query.message.reply_text(f"❌ {result['message']}", reply_markup=nav_keyboard)
             except Exception as e:
-                await query.message.reply_text(f"❌ Error: {str(e)}")
+                await query.message.reply_text(f"❌ Error: {str(e)}", reply_markup=nav_keyboard)
         
         elif callback_data == "stats_detailed":
-            session = self._get_user_session(user_id)
-            session['export_command'] = 'reports'
-            session['export_step'] = 'month'
-            session['report_type'] = '5'  # Comprehensive report
-            
-            await query.message.reply_text(
+            await query.edit_message_text(
                 "📊 Detailed Reports\n\n"
-                "Enter month (1-12) for comprehensive report:"
+                "Select the month for your comprehensive report:",
+                reply_markup=self.create_month_picker("stats")
             )
         
         elif callback_data == "stats_history":
-            help_text = """🕒 Processing History
+            help_text = """📅 Processing History
 
 Your processing history is stored in Google Sheets.
 
@@ -1800,7 +2947,7 @@ Tap 📋 Reports for detailed analysis"""
         elif callback_data == "stats_export":
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📄 GSTR-1 Export", callback_data="gen_gstr1")],
-                [InlineKeyboardButton("🔙 Back", callback_data="menu_generate")]
+                [InlineKeyboardButton("◀ Back", callback_data="menu_generate")]
             ])
             await query.edit_message_text(
                 "💾 Export Processing Data\n\n"
@@ -1822,21 +2969,27 @@ Tap 📋 Reports for detailed analysis"""
         """Handle /cancel command"""
         user_id = update.effective_user.id
         
+        cancelled = False
+        if user_id in self.order_sessions:
+            del self.order_sessions[user_id]
+            cancelled = True
         if user_id in self.user_sessions:
-            # Clear user session
             session = self.user_sessions[user_id]
-            image_count = len(session.get('images', []))
             self._clear_user_session(user_id)
-            
+            cancelled = True
+        if hasattr(self, 'batch_sessions') and user_id in self.batch_sessions:
+            del self.batch_sessions[user_id]
+            cancelled = True
+        
+        menu_text = await self._get_main_menu_text(user_id)
+        if cancelled:
             await update.message.reply_text(
-                f"All cleared ({image_count} image(s) removed).\n\n"
-                "What's next? 👇",
+                f"✅ All cleared!\n\n{menu_text}",
                 reply_markup=self.create_main_menu_keyboard()
             )
         else:
             await update.message.reply_text(
-                "Nothing active to cancel.\n\n"
-                "What would you like to do?",
+                menu_text,
                 reply_markup=self.create_main_menu_keyboard()
             )
     
@@ -1849,7 +3002,7 @@ Tap 📋 Reports for detailed analysis"""
         if session['state'] != 'reviewing':
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
                 "No invoice waiting to confirm.\n\n"
@@ -1874,7 +3027,7 @@ Tap 📋 Reports for detailed analysis"""
         if session['state'] != 'reviewing':
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
                 "No invoice to correct right now.\n\n"
@@ -1892,8 +3045,8 @@ Tap 📋 Reports for detailed analysis"""
                 InlineKeyboardButton("💾 Save Corrections", callback_data="btn_save_corrections"),
             ],
             [
-                InlineKeyboardButton("↩️ Cancel Correction", callback_data="btn_cancel_correction"),
-                InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                InlineKeyboardButton("◀ Cancel Correction", callback_data="btn_cancel_correction"),
+                InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
             ]
         ])
         await msg.reply_text(instructions, reply_markup=correction_keyboard)
@@ -1980,10 +3133,11 @@ Tap 📋 Reports for detailed analysis"""
                 duplicate_status = 'UNIQUE'
             
             # Save to sheets with full audit trail
-            tenant_sheet_id = self._get_tenant_sheet_id(user_id)
-            self._ensure_sheets_manager(sheet_id=tenant_sheet_id)  # Lazy init (tenant-aware)
+            tenant_sheet_id = await self._get_tenant_sheet_id(user_id)
+            await asyncio.to_thread(self._ensure_sheets_manager, tenant_sheet_id)
             if config.ENABLE_AUDIT_LOGGING:
-                self.sheets_manager.append_invoice_with_audit(
+                await asyncio.to_thread(
+                    self.sheets_manager.append_invoice_with_audit,
                     invoice_data=header_row,
                     line_items_data=line_items_data,
                     validation_result=validation_result,
@@ -1994,21 +3148,21 @@ Tap 📋 Reports for detailed analysis"""
                     duplicate_status=duplicate_status
                 )
             else:
-                # Fall back to Tier 1 method
-                self.sheets_manager.append_invoice_with_items(
+                await asyncio.to_thread(
+                    self.sheets_manager.append_invoice_with_items,
                     header_row,
                     line_items_data,
                     validation_result
                 )
             
             # Update customer master (Tier 3 feature)
-            self._update_customer_master_data(invoice_data)
+            await asyncio.to_thread(self._update_customer_master_data, invoice_data)
             
             # Update seller master (Tier 3 feature)
-            self._update_seller_master_data(invoice_data)
+            await asyncio.to_thread(self._update_seller_master_data, invoice_data)
             
             # Update HSN master from line items (Tier 3 feature)
-            self._update_hsn_master_data(session['data']['line_items'])
+            await asyncio.to_thread(self._update_hsn_master_data, session['data']['line_items'])
             
             # Generate success message
             success_message = self._format_success_message(
@@ -2028,7 +3182,7 @@ Tap 📋 Reports for detailed analysis"""
                     InlineKeyboardButton("📸 Upload Another", callback_data="menu_upload"),
                     InlineKeyboardButton("📊 Reports", callback_data="menu_generate"),
                 ],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(success_message, reply_markup=post_save_keyboard)  # No Markdown - plain text only
             # User now has confirmation - invoice processing COMPLETE
@@ -2050,10 +3204,10 @@ Tap 📋 Reports for detailed analysis"""
             # ═══════════════════════════════════════════════════════
             
             # ── Tenant: increment invoice counter ─────────────
-            self._ensure_tenant_manager()
+            await self._ensure_tenant_manager()
             if self.tenant_manager:
                 try:
-                    self.tenant_manager.increment_invoice_counter(user_id)
+                    await asyncio.to_thread(self.tenant_manager.increment_invoice_counter, user_id)
                 except Exception:
                     pass  # Non-blocking
             # ──────────────────────────────────────────────────
@@ -2356,7 +3510,7 @@ Tap 📋 Reports for detailed analysis"""
         
         if audit_data:
             processing_time = audit_data.get('Processing_Time_Seconds', 0)
-            success_message += f"\n⏱ Processed in {processing_time:.1f}s\n"
+            success_message += f"\n⏳ Processed in {processing_time:.1f}s\n"
         
         success_message += "\n📊 Data saved to Google Sheets."
         
@@ -2392,7 +3546,7 @@ Tap 📋 Reports for detailed analysis"""
                     InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
                 ],
                 [
-                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                    InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
                 ]
             ])
             await msg.reply_text(
@@ -2404,7 +3558,7 @@ Tap 📋 Reports for detailed analysis"""
         if not session['images'] and not session.get('batch'):
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
                 "No images yet! Send me a photo first.",
@@ -2422,13 +3576,28 @@ Tap 📋 Reports for detailed analysis"""
         if not session['images']:
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📤 Upload Invoice", callback_data="menu_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
                 "No images yet! Send me a photo first.",
                 reply_markup=keyboard
             )
             return
+        
+        # Tier limit check (additive, behind feature flag)
+        if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+            limit_msg = await self._check_tier_limit(user_id, 'invoices', len(session['images']))
+            if limit_msg:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Resubmit Pages", callback_data="btn_resubmit_pages")],
+                    [InlineKeyboardButton("⬆ Upgrade Plan", callback_data="menu_subscribe")],
+                    [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
+                ])
+                await msg.reply_text(
+                    f"⚠️ {limit_msg}",
+                    reply_markup=keyboard
+                )
+                return
         
         image_paths = session['images']
         session['start_time'] = datetime.now()
@@ -2438,161 +3607,192 @@ Tap 📋 Reports for detailed analysis"""
             f"🔄 Got it! Processing {len(image_paths)} {page_word}...\n\n"
             "Sit tight — this usually takes 15-30 seconds."
         )
-        
+
+        chat_id = update.effective_chat.id
+        processing_task = asyncio.create_task(
+            self._run_invoice_pipeline(msg, user_id, session, image_paths)
+        )
+        self._active_processing_tasks[user_id] = processing_task
+        self._retry_context[user_id] = {
+            'operation': 'invoice',
+            'msg': msg,
+            'session': session,
+            'image_paths': image_paths,
+            'update': update,
+            'context': context,
+        }
+
+        watchdog_task = asyncio.create_task(
+            self._processing_watchdog(chat_id, user_id, processing_task, context, 'invoice')
+        )
+
         try:
-            # Step 1: OCR - Extract text from all images
-            await msg.reply_text("⏳ Reading invoice text...  (1/4)")
-            ocr_start_time = datetime.now()
-            
-            ocr_result = await asyncio.to_thread(self.ocr_engine.extract_text_from_images, image_paths)
-            
-            # Handle both old (str) and new (dict) return types for backward compatibility
-            if isinstance(ocr_result, dict):
-                ocr_text = ocr_result['text']
-                # ═══════════════════════════════════════════════════════
-                # NEW: Store OCR metadata for background tracking (Phase 2)
-                # ═══════════════════════════════════════════════════════
-                if config.ENABLE_USAGE_TRACKING and 'pages_metadata' in ocr_result:
-                    session['_ocr_metadata'] = {
-                        'pages': ocr_result['pages_metadata'],
-                        'ocr_time_seconds': (datetime.now() - ocr_start_time).total_seconds()
-                    }
-                # ═══════════════════════════════════════════════════════
-            else:
-                # Backward compatibility: old code returned string directly
-                ocr_text = ocr_result
-            
-            session['ocr_text'] = ocr_text
-            
-            # Step 2: Parse GST data with Tier 1 (line items + validation)
-            await msg.reply_text("⏳ Extracting GST details...  (2/4)")
-            parsing_start_time = datetime.now()
-            
-            result = await asyncio.to_thread(self.gst_parser.parse_invoice_with_validation, ocr_text)
-            
-            parsing_time_seconds = (datetime.now() - parsing_start_time).total_seconds()
-            
-            # ═══════════════════════════════════════════════════════
-            # NEW: Store parsing metadata (Phase 2)
-            # ═══════════════════════════════════════════════════════
-            if config.ENABLE_USAGE_TRACKING:
-                session['_parsing_metadata'] = {
-                    'parsing_time_seconds': parsing_time_seconds,
-                    'ocr_text_length': len(ocr_text)
-                }
-            # ═══════════════════════════════════════════════════════
-            
-            invoice_data = result['invoice_data']
-            line_items = result['line_items']
-            validation_result = result['validation_result']
-            
-            session['data'] = {
-                'invoice_data': invoice_data,
-                'line_items': line_items,
-                'line_items_data': self.gst_parser.line_item_extractor.format_items_for_sheets(line_items)
-            }
-            session['validation_result'] = validation_result
-            
-            # Step 3: Tier 2 - Confidence Scoring
-            if config.ENABLE_CONFIDENCE_SCORING and self.confidence_scorer:
-                confidence_scores = self.confidence_scorer.score_fields(
-                    invoice_data,
-                    line_items,
-                    validation_result,
-                    ocr_text
-                )
-                session['confidence_scores'] = confidence_scores
-            else:
-                session['confidence_scores'] = {}
-            
-            # Step 4: Tier 2 - Check if review is needed
-            if config.ENABLE_MANUAL_CORRECTIONS and self.correction_manager:
-                needs_review = self.correction_manager.needs_review(
-                    session['confidence_scores'],
-                    validation_result,
-                    config.CONFIDENCE_THRESHOLD_REVIEW
-                )
-                
-                if needs_review:
-                    session['state'] = 'reviewing'
-                    review_msg = self.correction_manager.generate_review_message(
-                        invoice_data,
-                        session['confidence_scores'],
-                        validation_result,
-                        config.CONFIDENCE_THRESHOLD_REVIEW
-                    )
-                    review_keyboard = InlineKeyboardMarkup([
-                        [
-                            InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
-                            InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
-                        ],
-                        [
-                            InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
-                            InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
-                        ],
-                        [
-                            InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
-                        ]
-                    ])
-                    await msg.reply_text(review_msg, reply_markup=review_keyboard)
-                    return
-            
-            # Step 5: Tier 2 - Deduplication Check (warn-only mode)
-            if config.ENABLE_DEDUPLICATION and self.dedup_manager:
-                fingerprint = self.dedup_manager.generate_fingerprint(invoice_data)
-                session['fingerprint'] = fingerprint
-                
-                tenant_sheet_id = self._get_tenant_sheet_id(user_id)
-                self._ensure_sheets_manager(sheet_id=tenant_sheet_id)  # Lazy init (tenant-aware)
-                is_duplicate, existing_invoice = self.sheets_manager.check_duplicate_advanced(fingerprint)
-                
-                if is_duplicate:
-                    # Mark as duplicate but don't block - warn-only mode
-                    session['is_duplicate'] = True
-                    session['duplicate_info'] = existing_invoice
-                    
-                    # Show brief warning
-                    warning_msg = self.dedup_manager.format_duplicate_warning_brief(
-                        invoice_data,
-                        existing_invoice
-                    )
-                    await msg.reply_text(warning_msg)
-                    
-                    # Log the duplicate attempt
-                    print(f"[DUPLICATE] Invoice {invoice_data.get('Invoice_No', 'unknown')} detected as duplicate but saving anyway (warn-only mode)")
-            
-            # No review needed - show save options directly
-            session['state'] = 'reviewing'
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
-                    InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
-                ],
-                [
-                    InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
-                ],
-                [
-                    InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
-                ]
-            ])
+            while True:
+                current_task = self._active_processing_tasks.get(user_id)
+                if current_task is None or current_task.done():
+                    break
+                try:
+                    await current_task
+                    break
+                except asyncio.CancelledError:
+                    new_task = self._active_processing_tasks.get(user_id)
+                    if new_task is not None and new_task is not current_task and not new_task.done():
+                        continue
+                    raise
+        except asyncio.CancelledError:
             await msg.reply_text(
-                "✅ Validation complete!\n\nWhat would you like to do?",
-                reply_markup=keyboard
+                "✅ Invoice processing cancelled.\n\n"
+                + await self._get_main_menu_text(user_id),
+                reply_markup=self.create_main_menu_keyboard()
             )
-            
         except Exception as e:
             error_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Try Again", callback_data="menu_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
-                "😕 Something went wrong during processing.\n\n"
+                "❌ Something went wrong during processing.\n\n"
                 f"Details: {str(e)}\n\n"
                 "This can happen with blurry images or unusual formats.\n"
                 "Try re-sending a clearer photo.",
                 reply_markup=error_keyboard
             )
             print(f"Error processing invoice for user {user_id}: {str(e)}")
+        finally:
+            watchdog_task.cancel()
+            self._active_processing_tasks.pop(user_id, None)
+            self._retry_context.pop(user_id, None)
+
+    async def _run_invoice_pipeline(self, msg, user_id: int, session: dict, image_paths: list):
+        """Run the invoice OCR / parse / validate pipeline (used as a cancellable task)."""
+        # Step 1: OCR - Extract text from all images
+        await msg.reply_text("⏳ Reading invoice text...  (1/4)")
+        ocr_start_time = datetime.now()
+
+        ocr_result = await asyncio.to_thread(self.ocr_engine.extract_text_from_images, image_paths)
+
+        if isinstance(ocr_result, dict):
+            ocr_text = ocr_result['text']
+            if config.ENABLE_USAGE_TRACKING and 'pages_metadata' in ocr_result:
+                session['_ocr_metadata'] = {
+                    'pages': ocr_result['pages_metadata'],
+                    'ocr_time_seconds': (datetime.now() - ocr_start_time).total_seconds()
+                }
+        else:
+            ocr_text = ocr_result
+
+        session['ocr_text'] = ocr_text
+
+        # Step 2: Parse GST data with Tier 1 (line items + validation)
+        await msg.reply_text("⏳ Extracting GST details...  (2/4)")
+        parsing_start_time = datetime.now()
+
+        result = await asyncio.to_thread(self.gst_parser.parse_invoice_with_validation, ocr_text)
+
+        parsing_time_seconds = (datetime.now() - parsing_start_time).total_seconds()
+
+        if config.ENABLE_USAGE_TRACKING:
+            session['_parsing_metadata'] = {
+                'parsing_time_seconds': parsing_time_seconds,
+                'ocr_text_length': len(ocr_text)
+            }
+
+        invoice_data = result['invoice_data']
+        line_items = result['line_items']
+        validation_result = result['validation_result']
+
+        session['data'] = {
+            'invoice_data': invoice_data,
+            'line_items': line_items,
+            'line_items_data': self.gst_parser.line_item_extractor.format_items_for_sheets(line_items)
+        }
+        session['validation_result'] = validation_result
+
+        # Step 3: Tier 2 - Confidence Scoring
+        if config.ENABLE_CONFIDENCE_SCORING and self.confidence_scorer:
+            confidence_scores = self.confidence_scorer.score_fields(
+                invoice_data,
+                line_items,
+                validation_result,
+                ocr_text
+            )
+            session['confidence_scores'] = confidence_scores
+        else:
+            session['confidence_scores'] = {}
+
+        # Step 4: Tier 2 - Check if review is needed
+        if config.ENABLE_MANUAL_CORRECTIONS and self.correction_manager:
+            needs_review = self.correction_manager.needs_review(
+                session['confidence_scores'],
+                validation_result,
+                config.CONFIDENCE_THRESHOLD_REVIEW
+            )
+
+            if needs_review:
+                session['state'] = 'reviewing'
+                review_msg = self.correction_manager.generate_review_message(
+                    invoice_data,
+                    session['confidence_scores'],
+                    validation_result,
+                    config.CONFIDENCE_THRESHOLD_REVIEW
+                )
+                review_keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
+                        InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
+                    ],
+                    [
+                        InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
+                        InlineKeyboardButton("✏️ Corrections", callback_data="btn_correct"),
+                    ],
+                    [
+                        InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
+                    ]
+                ])
+                await msg.reply_text(review_msg, reply_markup=review_keyboard)
+                return
+
+        # Step 5: Tier 2 - Deduplication Check (warn-only mode)
+        if config.ENABLE_DEDUPLICATION and self.dedup_manager:
+            fingerprint = self.dedup_manager.generate_fingerprint(invoice_data)
+            session['fingerprint'] = fingerprint
+
+            tenant_sheet_id = await self._get_tenant_sheet_id(user_id)
+            await asyncio.to_thread(self._ensure_sheets_manager, tenant_sheet_id)
+            is_duplicate, existing_invoice = await asyncio.to_thread(
+                self.sheets_manager.check_duplicate_advanced, fingerprint
+            )
+
+            if is_duplicate:
+                session['is_duplicate'] = True
+                session['duplicate_info'] = existing_invoice
+
+                warning_msg = self.dedup_manager.format_duplicate_warning_brief(
+                    invoice_data,
+                    existing_invoice
+                )
+                await msg.reply_text(warning_msg)
+
+                print(f"[DUPLICATE] Invoice {invoice_data.get('Invoice_No', 'unknown')} detected as duplicate but saving anyway (warn-only mode)")
+
+        # No review needed - show save options directly
+        session['state'] = 'reviewing'
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("💾 Save to Sheets", callback_data="btn_save_sheets"),
+                InlineKeyboardButton("📊 Download CSV", callback_data="btn_download_csv"),
+            ],
+            [
+                InlineKeyboardButton("💾📊 Save & CSV", callback_data="btn_save_and_csv"),
+            ],
+            [
+                InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
+            ]
+        ])
+        await msg.reply_text(
+            "✅ Validation complete!\n\nWhat would you like to do?",
+            reply_markup=keyboard
+        )
     
     # ═══════════════════════════════════════════════════════════════════
     # Epic 2: ORDER UPLOAD COMMANDS (Feature-Flagged)
@@ -2619,7 +3819,7 @@ Tap 📋 Reports for detailed analysis"""
                     InlineKeyboardButton("📄 Single Mode", callback_data="menu_single_order_upload"),
                     InlineKeyboardButton("📦 Batch Mode", callback_data="menu_batch_order_upload"),
                 ],
-                [InlineKeyboardButton("🔙 Back", callback_data="menu_main")]
+                [InlineKeyboardButton("◀ Back", callback_data="menu_main")]
             ])
             await update.message.reply_text(
                 "📦 Sales Order\n\n"
@@ -2631,7 +3831,6 @@ Tap 📋 Reports for detailed analysis"""
             return
         
         # Create order session (single mode when batch is disabled)
-        from order_normalization import OrderSession
         order_session = OrderSession(user_id, update.effective_user.username)
         self.order_sessions[user_id] = order_session
         
@@ -2660,7 +3859,7 @@ Tap 📋 Reports for detailed analysis"""
         if user_id not in self.order_sessions:
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await msg.reply_text(
                 "❌ No Active Order Session\n\n"
@@ -2704,7 +3903,7 @@ Tap 📋 Reports for detailed analysis"""
         if user_id not in self.order_sessions:
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await update.effective_message.reply_text(
                 "Your order session expired.\n\nTap below to start a new one.",
@@ -2713,6 +3912,21 @@ Tap 📋 Reports for detailed analysis"""
             return
         
         order_session = self.order_sessions[user_id]
+        
+        # Tier limit check for orders (additive, behind feature flag)
+        if config.FEATURE_SUBSCRIPTION_MANAGEMENT:
+            limit_msg = await self._check_tier_limit(user_id, 'orders')
+            if limit_msg:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Resubmit Pages", callback_data="btn_resubmit_pages")],
+                    [InlineKeyboardButton("⬆ Upgrade Plan", callback_data="menu_subscribe")],
+                    [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
+                ])
+                await update.effective_message.reply_text(
+                    f"⚠️ {limit_msg}",
+                    reply_markup=keyboard
+                )
+                return
         
         # Submit the order
         if not order_session.submit():
@@ -2731,7 +3945,7 @@ Tap 📋 Reports for detailed analysis"""
         )
         
         # Epic 3: tenant-aware orchestrator initialisation
-        tenant_sheet_id = self._get_tenant_sheet_id(user_id)
+        tenant_sheet_id = await self._get_tenant_sheet_id(user_id)
         from order_normalization import OrderNormalizationOrchestrator
         if tenant_sheet_id and config.FEATURE_TENANT_SHEET_ISOLATION:
             # Per-tenant: create an orchestrator targeting the tenant sheet
@@ -2744,32 +3958,76 @@ Tap 📋 Reports for detailed analysis"""
                 print("[OK] Epic 2: Order orchestrator initialized (lazy)")
             order_orchestrator = self.order_orchestrator
         
-        # Process the order asynchronously
+        # Process the order with a watchdog that warns the user if it takes too long
+        chat_id = update.effective_chat.id
+        processing_task = asyncio.create_task(
+            order_orchestrator.process_order(order_session, update, output_format=output_format)
+        )
+        self._active_processing_tasks[user_id] = processing_task
+        self._retry_context[user_id] = {
+            'operation': 'order',
+            'output_format': output_format,
+            'order_session': order_session,
+            'order_orchestrator': order_orchestrator,
+            'update': update,
+            'context': context,
+        }
+
+        watchdog_task = asyncio.create_task(
+            self._processing_watchdog(chat_id, user_id, processing_task, context, 'order')
+        )
+
         try:
-            await order_orchestrator.process_order(order_session, update, output_format=output_format)
-            
+            while True:
+                current_task = self._active_processing_tasks.get(user_id)
+                if current_task is None or current_task.done():
+                    break
+                try:
+                    await current_task
+                    break
+                except asyncio.CancelledError:
+                    new_task = self._active_processing_tasks.get(user_id)
+                    if new_task is not None and new_task is not current_task and not new_task.done():
+                        continue
+                    raise
+
             # ── Tenant: increment order counter ───────────────
-            self._ensure_tenant_manager()
+            await self._ensure_tenant_manager()
             if self.tenant_manager:
                 try:
-                    self.tenant_manager.increment_order_counter(user_id)
+                    await asyncio.to_thread(self.tenant_manager.increment_order_counter, user_id)
                 except Exception:
-                    pass  # Non-blocking
+                    pass
             # ──────────────────────────────────────────────────
+
+            await update.effective_message.reply_text(
+                await self._get_main_menu_text(user_id),
+                reply_markup=self.create_main_menu_keyboard()
+            )
+        except asyncio.CancelledError:
+            await update.effective_message.reply_text(
+                "✅ Order processing cancelled.\n\n"
+                + await self._get_main_menu_text(user_id),
+                reply_markup=self.create_main_menu_keyboard()
+            )
         except Exception as e:
             print(f"[ERROR] Order processing failed: {e}")
+            import traceback
+            traceback.print_exc()
             order_error_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔄 Try Again", callback_data="menu_order_upload")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="menu_main")]
+                [InlineKeyboardButton("📋 Main Menu", callback_data="menu_main")]
             ])
             await update.effective_message.reply_text(
-                f"😕 Couldn't process that order.\n\n"
+                f"❌ Couldn't process that order.\n\n"
                 f"Details: {str(e)}\n\n"
                 f"Try re-sending clearer photos.",
                 reply_markup=order_error_keyboard
             )
         finally:
-            # Clean up session
+            watchdog_task.cancel()
+            self._active_processing_tasks.pop(user_id, None)
+            self._retry_context.pop(user_id, None)
             if user_id in self.order_sessions:
                 del self.order_sessions[user_id]
     
@@ -2853,7 +4111,7 @@ Tap 📋 Reports for detailed analysis"""
         except Exception as e:
             print(f"[ERROR] Order photo download failed: {e}")
             await update.message.reply_text(
-                f"😕 Couldn't download that image.\n\n"
+                f"❌ Couldn't download that image.\n\n"
                 f"Please try sending it again."
             )
     
@@ -2895,7 +4153,7 @@ Tap 📋 Reports for detailed analysis"""
         except Exception as e:
             print(f"[ERROR] Order document download failed: {e}")
             await update.message.reply_text(
-                f"😕 Couldn't download that image.\n\n"
+                f"❌ Couldn't download that image.\n\n"
                 f"Please try sending it again."
             )
     
@@ -3011,7 +4269,7 @@ Tap 📋 Reports for detailed analysis"""
                     InlineKeyboardButton("📋 Batch Status", callback_data=f"bst_{record.token_id}"),
                     InlineKeyboardButton("❌ Cancel Batch", callback_data=f"bca_{record.token_id}"),
                 ],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")],
+                [InlineKeyboardButton("◀ Back to Menu", callback_data="menu_main")],
             ])
             await update.message.reply_text(
                 f"✅ Batch queued!\n\n"
@@ -3106,7 +4364,7 @@ Tap 📋 Reports for detailed analysis"""
                 InlineKeyboardButton(f"🔄 Refresh {tid[-6:]}", callback_data=f"bst_{tid}"),
                 InlineKeyboardButton(f"❌ Cancel {tid[-6:]}", callback_data=f"bca_{tid}"),
             ])
-        rows.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_main")])
+        rows.append([InlineKeyboardButton("◀ Back to Menu", callback_data="menu_main")])
         return rows
 
     async def my_batches_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3275,13 +4533,13 @@ Tap 📋 Reports for detailed analysis"""
                     error_msg = str(last_error)
                     if "Timed out" in error_msg or "timeout" in error_msg.lower():
                         await update.message.reply_text(
-                            "⏱ The download timed out.\n\n"
+                            "⏳ The download timed out.\n\n"
                             "This usually means a slow connection.\n"
                             "Try sending the image again."
                         )
                     else:
                         await update.message.reply_text(
-                            f"😕 Couldn't download that image.\n\n"
+                            f"❌ Couldn't download that image.\n\n"
                             f"Please try sending it again."
                         )
     
@@ -3345,7 +4603,10 @@ Tap 📋 Reports for detailed analysis"""
         
         if session['state'] not in ['uploading', 'reviewing', 'correcting', 'confirming_duplicate']:
             await update.message.reply_text(
-                "Please finish your current operation first."
+                "Please finish your current operation first.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data="btn_cancel")]
+                ])
             )
             return
         
@@ -3408,7 +4669,7 @@ Tap 📋 Reports for detailed analysis"""
                         error_msg = str(last_error)
                         if "Timed out" in error_msg or "timeout" in error_msg.lower():
                             await update.message.reply_text(
-                                "⏱ The download timed out.\n\n"
+                                "⏳ The download timed out.\n\n"
                                 "The file might be too large. A few tips:\n"
                                 "  • Send as a photo (not file) — it's faster\n"
                                 "  • Try a smaller or compressed image\n"
@@ -3416,7 +4677,7 @@ Tap 📋 Reports for detailed analysis"""
                             )
                         else:
                             await update.message.reply_text(
-                                f"😕 Couldn't download that file.\n\n"
+                                f"❌ Couldn't download that file.\n\n"
                                 f"Please try sending it again."
                             )
         else:
@@ -3478,29 +4739,30 @@ Tap 📋 Reports for detailed analysis"""
             # Register the tenant
             self.pending_email_users.pop(user_id)
             try:
-                self._ensure_tenant_manager()
+                await self._ensure_tenant_manager()
                 if self.tenant_manager:
-                    self.tenant_manager.register_tenant(
+                    await asyncio.to_thread(
+                        self.tenant_manager.register_tenant,
                         user_id=user_id,
                         first_name=tenant_name,
                         username=username,
                         email=email,
                     )
                     await update.message.reply_text(
-                        "You're all set! 🎉\n\n"
+                        "You're all set! ✅\n\n"
                         "Registration complete. Let's get started!",
                         reply_markup=self.create_main_menu_keyboard()
                     )
                 else:
                     await update.message.reply_text(
-                        "😕 Registration service is temporarily unavailable.\n\n"
+                        "❌ Registration service is temporarily unavailable.\n\n"
                         "Please try again in a moment by tapping /start.",
                         reply_markup=self.create_main_menu_keyboard()
                     )
             except Exception as e:
                 print(f"[WARNING] Tenant registration failed: {e}")
                 await update.message.reply_text(
-                    "😕 Something went wrong with registration.\n\n"
+                    "❌ Something went wrong with registration.\n\n"
                     "Please try again by tapping /start.",
                     reply_markup=self.create_main_menu_keyboard()
                 )
@@ -3527,8 +4789,8 @@ Tap 📋 Reports for detailed analysis"""
                         InlineKeyboardButton(f"💾 Save {correction_count} Correction(s)", callback_data="btn_save_corrections"),
                     ],
                     [
-                        InlineKeyboardButton("↩️ Cancel Correction", callback_data="btn_cancel_correction"),
-                        InlineKeyboardButton("🗑 Cancel & Resend", callback_data="btn_cancel_resend"),
+                        InlineKeyboardButton("◀ Cancel Correction", callback_data="btn_cancel_correction"),
+                        InlineKeyboardButton("❌ Discard & Resend", callback_data="btn_cancel_resend"),
                     ]
                 ])
                 await update.message.reply_text(
@@ -3545,17 +4807,10 @@ Tap 📋 Reports for detailed analysis"""
             return
         
         # Default response
-        default_keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("📸 Upload Invoice", callback_data="menu_upload"),
-                InlineKeyboardButton("📦 Sales Order", callback_data="menu_order_upload"),
-            ],
-            [InlineKeyboardButton("❓ Help", callback_data="menu_help")]
-        ])
         await update.message.reply_text(
-            "Not sure what to do with that! 🤔\n\n"
-            "To get started, send me an invoice photo — or pick an option below.",
-            reply_markup=default_keyboard
+            "I didn't catch that.\n\n"
+            "Send me an invoice photo to get started, or pick an option below.",
+            reply_markup=self.create_main_menu_keyboard()
         )
     
     def run(self):

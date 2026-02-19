@@ -5,8 +5,11 @@ Manages tenant registration and usage tracking in the Tenant_Info Google Sheet t
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
+import time
 import config
+
+TENANT_CACHE_TTL_SECONDS = 60
 
 
 # Column mapping for the Tenant_Info sheet (1-indexed)
@@ -22,13 +25,21 @@ COL_DATE_BILLING = 9        # I
 COL_SUBSCRIPTION_TYPE = 10  # J
 COL_SHEET_ID = 11           # K  (Epic 3: per-tenant sheet ID)
 COL_SUBSCRIPTION_PLAN = 12  # L  (Epic 3: configurable tier id)
+COL_SUBSCRIPTION_EXPIRES_AT = 13  # M  (Subscription expiry date)
+COL_RAZORPAY_CUSTOMER_ID = 14    # N  (Razorpay customer reference)
 
 HEADERS = [
     'Tenant ID', 'Tenant Name', 'Email ID', 'User ID', 'User Name',
     'Counter Of Invoice Upload', 'Counter of Order Uploads',
     'Date of Enrollment', 'Date of Billing', 'Subscription Type',
-    'Sheet_ID', 'Subscription_Plan'
+    'Sheet_ID', 'Subscription_Plan', 'Subscription_Expires_At',
+    'Razorpay_Customer_ID'
 ]
+
+
+def _col_letter(col_num: int) -> str:
+    """Convert 1-indexed column number to letter (1->A, 2->B, ..., 26->Z)."""
+    return chr(ord('A') + col_num - 1)
 
 
 class TenantManager:
@@ -66,6 +77,8 @@ class TenantManager:
 
         # Cache: map user_id -> row number for fast lookups
         self._row_cache: Dict[int, int] = {}
+        # TTL data cache: user_id -> (tenant_dict, timestamp)
+        self._data_cache: Dict[int, Tuple[Dict, float]] = {}
         self._load_cache()
 
     def _load_cache(self):
@@ -85,6 +98,10 @@ class TenantManager:
         except Exception as e:
             print(f"[TENANT] Cache load warning: {e}")
 
+    def invalidate_cache(self, user_id: int):
+        """Remove a user's entry from the TTL data cache."""
+        self._data_cache.pop(user_id, None)
+
     def get_tenant(self, user_id: int) -> Optional[Dict]:
         """
         Look up a tenant by Telegram User ID.
@@ -92,13 +109,22 @@ class TenantManager:
         Returns:
             Dict with tenant info, or None if not found.
         """
-        # Check cache first
+        # Check TTL data cache first — avoids any Sheets call
+        cached = self._data_cache.get(user_id)
+        if cached is not None:
+            tenant_dict, ts = cached
+            if time.monotonic() - ts < TENANT_CACHE_TTL_SECONDS:
+                return tenant_dict
+
+        # Check row-number cache (still needs a single row read)
         if user_id in self._row_cache:
             row_num = self._row_cache[user_id]
             try:
                 row = self.worksheet.row_values(row_num)
                 if row and len(row) >= COL_SUBSCRIPTION_TYPE:
-                    return self._row_to_dict(row)
+                    result = self._row_to_dict(row)
+                    self._data_cache[user_id] = (result, time.monotonic())
+                    return result
             except Exception:
                 pass  # Fall through to full scan
 
@@ -112,7 +138,9 @@ class TenantManager:
                     try:
                         if int(row[COL_USER_ID - 1]) == user_id:
                             self._row_cache[user_id] = row_idx + 1
-                            return self._row_to_dict(row)
+                            result = self._row_to_dict(row)
+                            self._data_cache[user_id] = (result, time.monotonic())
+                            return result
                     except (ValueError, TypeError):
                         pass
         except Exception as e:
@@ -170,6 +198,8 @@ class TenantManager:
             'Free',                     # J: Subscription Type
             sheet_id,                   # K: Sheet_ID (Epic 3)
             config.DEFAULT_SUBSCRIPTION_TIER,  # L: Subscription_Plan (Epic 3)
+            '',                         # M: Subscription_Expires_At
+            '',                         # N: Razorpay_Customer_ID
         ]
 
         self.worksheet.append_row(new_row, value_input_option='USER_ENTERED', insert_data_option='INSERT_ROWS', table_range='A1')
@@ -177,6 +207,7 @@ class TenantManager:
         # Update cache with the new row number
         all_values = self.worksheet.get_all_values()
         self._row_cache[user_id] = len(all_values)
+        self.invalidate_cache(user_id)
 
         print(f"[TENANT] Registered new tenant: {tenant_id} ({first_name}, {user_id})")
         return self._row_to_dict(new_row)
@@ -204,6 +235,7 @@ class TenantManager:
             current_val = self.worksheet.cell(row_num, col).value
             new_val = int(current_val or 0) + 1
             self.worksheet.update_cell(row_num, col, new_val)
+            self.invalidate_cache(user_id)
             print(f"[TENANT] Updated counter col {col} for user {user_id}: {new_val}")
         except Exception as e:
             print(f"[TENANT] Counter increment failed for user {user_id}: {e}")
@@ -257,11 +289,74 @@ class TenantManager:
 
         try:
             self.worksheet.update_cell(row_num, COL_SUBSCRIPTION_PLAN, tier_id)
+            self.invalidate_cache(user_id)
             print(f"[TENANT] Updated subscription for user {user_id}: {tier_id}")
             return True
         except Exception as e:
             print(f"[TENANT] Subscription update failed for user {user_id}: {e}")
             return False
+
+    def update_subscription_with_expiry(
+        self, user_id: int, tier_id: str, expires_at: str, razorpay_customer_id: str = ''
+    ) -> bool:
+        """
+        Update subscription plan, expiry, billing date, and optionally Razorpay customer ID.
+
+        Args:
+            user_id: Telegram user ID
+            tier_id: Subscription tier identifier
+            expires_at: ISO date string for expiry (empty string for free tier)
+            razorpay_customer_id: Razorpay customer identifier
+
+        Returns:
+            True if updated successfully, False otherwise.
+        """
+        row_num = self._row_cache.get(user_id)
+        if not row_num:
+            tenant = self.get_tenant(user_id)
+            if not tenant:
+                print(f"[TENANT] Cannot update subscription: user {user_id} not found")
+                return False
+            row_num = self._row_cache.get(user_id)
+
+        try:
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            batch_updates = [
+                {'range': f'{_col_letter(COL_SUBSCRIPTION_PLAN)}{row_num}', 'values': [[tier_id]]},
+                {'range': f'{_col_letter(COL_DATE_BILLING)}{row_num}', 'values': [[now]]},
+                {'range': f'{_col_letter(COL_SUBSCRIPTION_EXPIRES_AT)}{row_num}', 'values': [[expires_at]]},
+            ]
+            if razorpay_customer_id:
+                batch_updates.append(
+                    {'range': f'{_col_letter(COL_RAZORPAY_CUSTOMER_ID)}{row_num}', 'values': [[razorpay_customer_id]]}
+                )
+            self.worksheet.batch_update(batch_updates, value_input_option='USER_ENTERED')
+            self.invalidate_cache(user_id)
+            print(f"[TENANT] Updated subscription for user {user_id}: {tier_id}, expires: {expires_at}")
+            return True
+        except Exception as e:
+            print(f"[TENANT] Subscription update with expiry failed for user {user_id}: {e}")
+            return False
+
+    def get_tenant_by_email(self, email: str) -> Optional[Dict]:
+        """Look up a tenant by email address (for API user resolution)."""
+        try:
+            all_values = self.worksheet.get_all_values()
+            for row_idx, row in enumerate(all_values):
+                if row_idx == 0:
+                    continue
+                if len(row) >= COL_EMAIL_ID and row[COL_EMAIL_ID - 1]:
+                    if row[COL_EMAIL_ID - 1].strip().lower() == email.strip().lower():
+                        uid_str = row[COL_USER_ID - 1] if len(row) >= COL_USER_ID else ''
+                        if uid_str:
+                            try:
+                                self._row_cache[int(uid_str)] = row_idx + 1
+                            except (ValueError, TypeError):
+                                pass
+                        return self._row_to_dict(row)
+        except Exception as e:
+            print(f"[TENANT] Email lookup error: {e}")
+        return None
 
     @staticmethod
     def _row_to_dict(row) -> Dict:
@@ -279,4 +374,6 @@ class TenantManager:
             'subscription_type': row[COL_SUBSCRIPTION_TYPE - 1] if len(row) >= COL_SUBSCRIPTION_TYPE else 'Free',
             'sheet_id': row[COL_SHEET_ID - 1] if len(row) >= COL_SHEET_ID else '',
             'subscription_plan': row[COL_SUBSCRIPTION_PLAN - 1] if len(row) >= COL_SUBSCRIPTION_PLAN else '',
+            'subscription_expires_at': row[COL_SUBSCRIPTION_EXPIRES_AT - 1] if len(row) >= COL_SUBSCRIPTION_EXPIRES_AT else '',
+            'razorpay_customer_id': row[COL_RAZORPAY_CUSTOMER_ID - 1] if len(row) >= COL_RAZORPAY_CUSTOMER_ID else '',
         }
