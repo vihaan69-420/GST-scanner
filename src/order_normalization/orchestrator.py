@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, List
 import os
 import config
+from telegram.error import BadRequest
 from .extractor import OrderExtractor
 from .normalizer import OrderNormalizer
 from .deduplicator import OrderDeduplicator
@@ -32,6 +33,15 @@ class OrderNormalizationOrchestrator:
         self.pdf_generator = OrderPDFGenerator()
         self.sheets_handler = OrderSheetsHandler(sheet_id=sheet_id)
     
+    @staticmethod
+    async def _safe_edit(msg, text: str):
+        """Edit a message in-place, silently ignoring 'Message is not modified'."""
+        try:
+            await msg.edit_text(text)
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
+
     async def process_order(self, order_session, update, output_format: str = 'pdf'):
         """
         Main orchestration method - processes complete order pipeline
@@ -53,13 +63,19 @@ class OrderNormalizationOrchestrator:
         """
         try:
             order_session.set_processing()
+
+            # Single progress message — edited in-place for each step
+            progress_msg = await update.effective_message.reply_text(
+                "🔄 Step 1/6: Extracting order data from images..."
+            )
             
             # === PHASE 1: EXTRACTION ===
             try:
                 print(f"[ORCHESTRATOR] Starting extraction for {order_session.order_id}...")
-                await update.effective_message.reply_text("🔄 Step 1/6: Extracting order data from images...")
                 
-                extracted_pages = self.extractor.extract_all_pages(order_session.pages)
+                extracted_pages = await asyncio.to_thread(
+                    self.extractor.extract_all_pages, order_session.pages
+                )
                 
                 # Check if extraction yielded any lines
                 total_lines = sum(len(page.get('lines_raw', [])) for page in extracted_pages)
@@ -76,7 +92,8 @@ class OrderNormalizationOrchestrator:
                 
             except Exception as e:
                 order_session.set_failed(f"Extraction failed: {str(e)}")
-                await update.effective_message.reply_text(
+                await self._safe_edit(
+                    progress_msg,
                     f"❌ Order extraction failed.\n\n"
                     f"Error: {str(e)}\n\n"
                     f"Please try again or contact support."
@@ -86,21 +103,21 @@ class OrderNormalizationOrchestrator:
             # === PHASE 2: NORMALIZATION ===
             try:
                 print(f"[ORCHESTRATOR] Normalizing extracted data...")
-                await update.effective_message.reply_text("🔄 Step 2/6: Normalizing part names and colors...")
+                await self._safe_edit(progress_msg, "🔄 Step 2/6: Normalizing part names and colors...")
                 
-                normalized_lines = self.normalizer.normalize_all_lines(extracted_pages)
+                normalized_lines = await asyncio.to_thread(
+                    self.normalizer.normalize_all_lines, extracted_pages
+                )
                 print(f"[ORCHESTRATOR] Normalized {len(normalized_lines)} lines")
                 
             except Exception as e:
                 order_session.set_failed(f"Normalization failed: {str(e)}")
-                await update.effective_message.reply_text(f"❌ Data normalization failed: {str(e)}")
+                await self._safe_edit(progress_msg, f"❌ Data normalization failed: {str(e)}")
                 return
             
             # === PHASE 3: DEDUPLICATION (DISABLED) ===
-            # Note: Deduplication disabled per user request
-            # All items will be included in final invoice
             print(f"[ORCHESTRATOR] Skipping deduplication (disabled by user request)")
-            await update.effective_message.reply_text("🔄 Step 3/6: Processing all items...")
+            await self._safe_edit(progress_msg, "🔄 Step 3/6: Processing all items...")
             
             # Use all normalized lines (no deduplication)
             unique_lines = normalized_lines
@@ -109,9 +126,11 @@ class OrderNormalizationOrchestrator:
             # === PHASE 4: PRICING MATCH ===
             try:
                 print(f"[ORCHESTRATOR] Matching with pricing sheet...")
-                await update.effective_message.reply_text("🔄 Step 4/6: Matching prices...")
+                await self._safe_edit(progress_msg, "🔄 Step 4/6: Matching prices...")
                 
-                matched_lines = self.pricing_matcher.match_all_lines(unique_lines)
+                matched_lines = await asyncio.to_thread(
+                    self.pricing_matcher.match_all_lines, unique_lines
+                )
                 
                 # Count matches
                 matched_count = sum(1 for line in matched_lines if line.get('matched', False))
@@ -128,7 +147,6 @@ class OrderNormalizationOrchestrator:
                 # Pricing failure is non-critical - continue with zero prices
                 print(f"[WARNING] Pricing match failed: {e}")
                 order_session.set_review_required(f"Pricing match failed: {str(e)}")
-                # Continue with zero prices
                 matched_lines = unique_lines
                 for line in matched_lines:
                     line['matched'] = False
@@ -137,16 +155,14 @@ class OrderNormalizationOrchestrator:
             # === PHASE 5: COMPUTE TOTALS & BUILD CLEAN MODEL ===
             try:
                 print(f"[ORCHESTRATOR] Building clean invoice model...")
-                await update.effective_message.reply_text("🔄 Step 5/6: Computing totals...")
+                await self._safe_edit(progress_msg, "🔄 Step 5/6: Computing totals...")
                 
-                # Compute line totals
                 matched_lines = self.compute_line_totals(matched_lines)
                 
-                # Build clean invoice model
                 clean_invoice = self.build_clean_invoice(
                     matched_lines,
                     order_session.to_dict(),
-                    order_metadata  # Pass extracted customer metadata
+                    order_metadata
                 )
                 
                 print(f"[ORCHESTRATOR] Clean invoice: {clean_invoice['total_items']} items, "
@@ -154,15 +170,16 @@ class OrderNormalizationOrchestrator:
                 
             except Exception as e:
                 order_session.set_failed(f"Invoice model generation failed: {str(e)}")
-                await update.effective_message.reply_text(f"❌ Invoice generation failed: {str(e)}")
+                await self._safe_edit(progress_msg, f"❌ Invoice generation failed: {str(e)}")
                 return
             
             # === PHASE 6: GENERATE OUTPUT (PDF or CSV) ===
             output_path = None
+            output_paths_extra = []
             try:
                 format_label = output_format.upper()
                 print(f"[ORCHESTRATOR] Generating {format_label}...")
-                await update.effective_message.reply_text(f"🔄 Step 6/6: Generating {format_label}...")
+                await self._safe_edit(progress_msg, f"🔄 Step 6/6: Generating {format_label}...")
                 
                 if output_format == 'csv' and config.FEATURE_ORDER_SPLIT_CSV:
                     from exports.order_csv_exporter import OrderCSVExporter
@@ -171,16 +188,20 @@ class OrderNormalizationOrchestrator:
                         'page_count': len(order_session.pages),
                         'created_by': order_session.user_id,
                     }
-                    header_path, items_path = _csv_exporter.export_order(
-                        clean_invoice, session_meta
+                    header_path, items_path = await asyncio.to_thread(
+                        _csv_exporter.export_order, clean_invoice, session_meta
                     )
                     output_path = header_path
                     if items_path:
                         output_paths_extra = [items_path]
                 elif output_format == 'csv':
-                    output_path = self.pdf_generator.generate_csv(clean_invoice)
+                    output_path = await asyncio.to_thread(
+                        self.pdf_generator.generate_csv, clean_invoice
+                    )
                 else:
-                    output_path = self.pdf_generator.generate_pdf(clean_invoice)
+                    output_path = await asyncio.to_thread(
+                        self.pdf_generator.generate_pdf, clean_invoice
+                    )
                 
             except Exception as e:
                 print(f"[WARNING] {output_format.upper()} generation failed: {e}")
@@ -195,9 +216,14 @@ class OrderNormalizationOrchestrator:
                     'created_by': order_session.user_id
                 }
                 
-                self.sheets_handler.append_order_summary(clean_invoice, session_metadata)
-                self.sheets_handler.append_order_line_items(clean_invoice)
-                self.sheets_handler.update_customer_details(
+                await asyncio.to_thread(
+                    self.sheets_handler.append_order_summary, clean_invoice, session_metadata
+                )
+                await asyncio.to_thread(
+                    self.sheets_handler.append_order_line_items, clean_invoice
+                )
+                await asyncio.to_thread(
+                    self.sheets_handler.update_customer_details,
                     clean_invoice.get('customer_name', 'N/A'),
                     clean_invoice['order_date']
                 )
@@ -205,7 +231,6 @@ class OrderNormalizationOrchestrator:
                 print(f"[ORCHESTRATOR] Successfully uploaded to Google Sheets")
                 
             except Exception as e:
-                # Sheet failure is non-critical if PDF exists
                 print(f"[WARNING] Google Sheets upload failed: {e}")
                 if output_path:
                     await update.effective_message.reply_text(
@@ -213,10 +238,16 @@ class OrderNormalizationOrchestrator:
                         "PDF is attached below."
                     )
             
+            # Remove the progress message now that processing is done
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
+
             # === PHASE 8: SEND OUTPUT TO USER ===
             if output_path and os.path.exists(output_path):
                 await self.send_order_output_to_user(update, clean_invoice, output_path, output_format)
-                if config.FEATURE_ORDER_SPLIT_CSV and locals().get('output_paths_extra'):
+                if config.FEATURE_ORDER_SPLIT_CSV and output_paths_extra:
                     for extra_path in output_paths_extra:
                         if os.path.exists(extra_path):
                             try:
@@ -242,7 +273,6 @@ class OrderNormalizationOrchestrator:
             
             # ═══════════════════════════════════════════════════════
             # Track order usage in background (non-blocking)
-            # Runs AFTER user already received PDF - no impact on UX
             # ═══════════════════════════════════════════════════════
             if config.ENABLE_USAGE_TRACKING and config.ENABLE_ORDER_TRACKING:
                 try:
@@ -258,7 +288,6 @@ class OrderNormalizationOrchestrator:
             # ═══════════════════════════════════════════════════════
             
         except Exception as e:
-            # Catch-all for unexpected errors
             order_session.set_failed(str(e))
             await update.effective_message.reply_text(
                 f"❌ Unexpected error during processing:\n\n{str(e)}\n\n"

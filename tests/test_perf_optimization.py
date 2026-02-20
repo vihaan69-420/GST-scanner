@@ -212,3 +212,135 @@ class TestTier3AsyncWrapping:
                 assert 'asyncio.to_thread' in context, (
                     f'{method_call} at line {i+1} is NOT inside asyncio.to_thread:\n{context}'
                 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Layer 1: Verify asyncio.to_thread usage in telegram_bot.py callback routes
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestBotCallbackAsyncWrapping:
+    """Verify that generate_processing_stats in telegram_bot.py callbacks is wrapped."""
+
+    @pytest.fixture(autouse=True)
+    def _load_source(self):
+        path = os.path.join(SRC_DIR, 'bot', 'telegram_bot.py')
+        with open(path, encoding='utf-8') as f:
+            self.source = f.read()
+        yield
+
+    @pytest.mark.parametrize('method_call', [
+        'self.tier3_handlers.reporter.generate_processing_stats',
+    ])
+    def test_call_is_in_to_thread(self, method_call):
+        """generate_processing_stats in bot callbacks must be inside asyncio.to_thread."""
+        occurrences = self.source.count(method_call)
+        assert occurrences > 0, f'{method_call} not found in telegram_bot.py'
+
+        lines = self.source.split('\n')
+        for i, line in enumerate(lines):
+            if method_call in line:
+                context = '\n'.join(lines[max(0, i-2):i+1])
+                assert 'asyncio.to_thread' in context, (
+                    f'{method_call} at line {i+1} is NOT inside asyncio.to_thread:\n{context}'
+                )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Layer 1: Verify asyncio.to_thread usage in orchestrator.py
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestOrchestratorAsyncWrapping:
+    """Verify that blocking calls in orchestrator.process_order (async) are wrapped.
+
+    Note: process_order_headless is intentionally synchronous (runs in a
+    batch-worker thread) so its calls are excluded from this check.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load_source(self):
+        path = os.path.join(SRC_DIR, 'order_normalization', 'orchestrator.py')
+        with open(path, encoding='utf-8') as f:
+            full_source = f.read()
+        tree = ast.parse(full_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == 'OrderNormalizationOrchestrator':
+                for item in node.body:
+                    if isinstance(item, ast.AsyncFunctionDef) and item.name == 'process_order':
+                        start = item.lineno - 1
+                        end = item.end_lineno
+                        self.source = '\n'.join(full_source.splitlines()[start:end])
+                        break
+                break
+        assert hasattr(self, 'source'), 'process_order async method not found'
+        yield
+
+    @pytest.mark.parametrize('method_call', [
+        'self.extractor.extract_all_pages',
+        'self.normalizer.normalize_all_lines',
+        'self.pricing_matcher.match_all_lines',
+        'self.pdf_generator.generate_pdf',
+        'self.pdf_generator.generate_csv',
+        'self.sheets_handler.append_order_summary',
+        'self.sheets_handler.append_order_line_items',
+        'self.sheets_handler.update_customer_details',
+    ])
+    def test_call_is_in_to_thread(self, method_call):
+        """Every blocking call in async process_order must be inside asyncio.to_thread."""
+        occurrences = self.source.count(method_call)
+        assert occurrences > 0, f'{method_call} not found in process_order'
+
+        lines = self.source.split('\n')
+        for i, line in enumerate(lines):
+            if method_call in line:
+                context = '\n'.join(lines[max(0, i-2):i+1])
+                assert 'asyncio.to_thread' in context, (
+                    f'{method_call} at line {i+1} is NOT inside asyncio.to_thread:\n{context}'
+                )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Layer 3: Verify BadRequest handling in telegram_bot.py
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestBadRequestHandling:
+    """Verify that BadRequest is imported and caught in handle_menu_callback."""
+
+    @pytest.fixture(autouse=True)
+    def _load_source(self):
+        path = os.path.join(SRC_DIR, 'bot', 'telegram_bot.py')
+        with open(path, encoding='utf-8') as f:
+            self.source = f.read()
+        self.tree = ast.parse(self.source)
+        yield
+
+    def test_bad_request_imported(self):
+        """telegram.error.BadRequest must be imported."""
+        assert 'from telegram.error import BadRequest' in self.source, (
+            'BadRequest is not imported from telegram.error'
+        )
+
+    def test_handle_menu_callback_catches_bad_request(self):
+        """handle_menu_callback must have an except BadRequest clause."""
+        class_node = None
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.ClassDef) and node.name == 'GSTScannerBot':
+                class_node = node
+                break
+        assert class_node is not None, 'GSTScannerBot class not found'
+
+        method_node = None
+        for item in class_node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == 'handle_menu_callback':
+                method_node = item
+                break
+        assert method_node is not None, 'handle_menu_callback not found'
+
+        bad_request_caught = False
+        for node in ast.walk(method_node):
+            if isinstance(node, ast.ExceptHandler) and node.type is not None:
+                if isinstance(node.type, ast.Name) and node.type.id == 'BadRequest':
+                    bad_request_caught = True
+                    break
+        assert bad_request_caught, (
+            'handle_menu_callback does not have an except BadRequest clause'
+        )

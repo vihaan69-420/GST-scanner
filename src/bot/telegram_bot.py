@@ -15,6 +15,7 @@ if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 from telegram import Update, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.error import BadRequest
 print("[STARTUP] Telegram imports done", flush=True)
 from telegram.ext import (
     Application,
@@ -1179,6 +1180,11 @@ class GSTScannerBot:
 
         try:
             await self._route_menu_callback(query, callback_data, user_id, update, context)
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                pass
+            else:
+                print(f"[WARN] Telegram BadRequest for '{callback_data}': {e}")
         except Exception as e:
             print(f"[ERROR] Callback handler failed for '{callback_data}': {e}")
             import traceback
@@ -1190,6 +1196,20 @@ class GSTScannerBot:
                 )
             except Exception:
                 pass
+
+    @staticmethod
+    async def _safe_edit_message(msg, text: str, reply_markup=None, parse_mode=None):
+        """Edit a message, silently ignoring 'Message is not modified' errors."""
+        try:
+            kwargs = {"text": text}
+            if reply_markup is not None:
+                kwargs["reply_markup"] = reply_markup
+            if parse_mode is not None:
+                kwargs["parse_mode"] = parse_mode
+            await msg.edit_text(**kwargs)
+        except BadRequest as e:
+            if "Message is not modified" not in str(e):
+                raise
 
     async def _route_menu_callback(self, query, callback_data, user_id, update, context):
         """Route callback data to the appropriate handler."""
@@ -2440,7 +2460,9 @@ class GSTScannerBot:
                 ]
             ])
             try:
-                result = self.tier3_handlers.reporter.generate_processing_stats()
+                result = await asyncio.to_thread(
+                    self.tier3_handlers.reporter.generate_processing_stats
+                )
                 if result['success']:
                     message = "📊 PROCESSING STATISTICS\n\n"
                     message += f"Total Invoices: {result['total_invoices']}\n\n"
@@ -2890,7 +2912,9 @@ class GSTScannerBot:
                 ]
             ])
             try:
-                result = self.tier3_handlers.reporter.generate_processing_stats()
+                result = await asyncio.to_thread(
+                    self.tier3_handlers.reporter.generate_processing_stats
+                )
                 if result['success']:
                     message = "📊 QUICK STATISTICS\n\n"
                     message += f"Total Invoices: {result['total_invoices']}\n\n"
@@ -3665,8 +3689,10 @@ Tap 📋 Reports for detailed analysis"""
 
     async def _run_invoice_pipeline(self, msg, user_id: int, session: dict, image_paths: list):
         """Run the invoice OCR / parse / validate pipeline (used as a cancellable task)."""
+        # Single progress message — edited in-place for each step
+        progress_msg = await msg.reply_text("⏳ Reading invoice text...  (1/4)")
+
         # Step 1: OCR - Extract text from all images
-        await msg.reply_text("⏳ Reading invoice text...  (1/4)")
         ocr_start_time = datetime.now()
 
         ocr_result = await asyncio.to_thread(self.ocr_engine.extract_text_from_images, image_paths)
@@ -3684,7 +3710,7 @@ Tap 📋 Reports for detailed analysis"""
         session['ocr_text'] = ocr_text
 
         # Step 2: Parse GST data with Tier 1 (line items + validation)
-        await msg.reply_text("⏳ Extracting GST details...  (2/4)")
+        await self._safe_edit_message(progress_msg, "⏳ Extracting GST details...  (2/4)")
         parsing_start_time = datetime.now()
 
         result = await asyncio.to_thread(self.gst_parser.parse_invoice_with_validation, ocr_text)
